@@ -185,7 +185,7 @@ class _PosAppState extends State<PosApp> {
     if (_isSessionLoading) {
       return const PosActionResult(
         success: false,
-        message: 'Data sync is already in progress.',
+        message: 'Data sync is already in progress!',
       );
     }
 
