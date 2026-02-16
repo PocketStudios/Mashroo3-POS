@@ -190,7 +190,6 @@ class _PosAppState extends State<PosApp> {
     }
 
     await _loadPosData();
-
     if (_sessionError != null) {
       return PosActionResult(success: false, message: _sessionError!);
     }
@@ -206,7 +205,7 @@ class _PosAppState extends State<PosApp> {
       return error.message;
     }
 
-    return 'Unexpected error: $error';
+    return 'Unexpected error $error';
   }
 
   PosActionResult _addProductToCart(Product product) {
