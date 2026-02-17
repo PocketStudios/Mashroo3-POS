@@ -364,7 +364,7 @@ class _PosAppState extends State<PosApp> {
     }
   }
 
-  Future<PosActionResult> _createOrder() async {
+  Future<PosActionResult> _createOrder(String? orderDescription) async {
     final String? apiKey = _apiKey;
     if (apiKey == null || apiKey.isEmpty) {
       return const PosActionResult(
@@ -397,6 +397,7 @@ class _PosAppState extends State<PosApp> {
       final PosOrder? createdOrder = await client.createOrder(
         customerId: customer.apiId,
         items: requestItems,
+        orderDescription: orderDescription,
       );
 
       if (!mounted) {
@@ -800,7 +801,8 @@ class PosScreen extends StatefulWidget {
   final void Function(Customer customer) onCustomerSelected;
   final Future<PosActionResult> Function(String name, String? phone)
       onCreateCustomer;
-  final Future<PosActionResult> Function() onCreateOrder;
+  final Future<PosActionResult> Function(String? orderDescription)
+      onCreateOrder;
 
   @override
   State<PosScreen> createState() => _PosScreenState();
@@ -810,6 +812,8 @@ class _PosScreenState extends State<PosScreen> {
   final TextEditingController _barcodeController = TextEditingController();
   final FocusNode _barcodeFocusNode = FocusNode();
   final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _orderDescriptionController =
+      TextEditingController();
   final NumberFormat _currency = NumberFormat.simpleCurrency();
 
   bool _isSigningOut = false;
@@ -823,6 +827,7 @@ class _PosScreenState extends State<PosScreen> {
     _barcodeController.dispose();
     _barcodeFocusNode.dispose();
     _searchController.dispose();
+    _orderDescriptionController.dispose();
     super.dispose();
   }
 
@@ -902,12 +907,35 @@ class _PosScreenState extends State<PosScreen> {
     _barcodeFocusNode.requestFocus();
   }
 
+  Future<void> _selectCustomerDialog() async {
+    final Customer? selectedCustomer = await showDialog<Customer>(
+      context: context,
+      builder: (BuildContext context) {
+        return _CustomerSearchDialog(
+          customers: widget.customers,
+          selectedCustomer: widget.selectedCustomer,
+        );
+      },
+    );
+
+    if (!mounted || selectedCustomer == null) {
+      return;
+    }
+
+    widget.onCustomerSelected(selectedCustomer);
+    _barcodeFocusNode.requestFocus();
+  }
+
   Future<void> _createOrder() async {
+    final String trimmedDescription = _orderDescriptionController.text.trim();
+
     setState(() {
       _isCreatingOrder = true;
     });
 
-    final PosActionResult result = await widget.onCreateOrder();
+    final PosActionResult result = await widget.onCreateOrder(
+      trimmedDescription.isEmpty ? null : trimmedDescription,
+    );
 
     if (!mounted) {
       return;
@@ -915,6 +943,9 @@ class _PosScreenState extends State<PosScreen> {
 
     setState(() {
       _isCreatingOrder = false;
+      if (result.success) {
+        _orderDescriptionController.clear();
+      }
     });
 
     _showMessage(result);
@@ -1124,25 +1155,22 @@ class _PosScreenState extends State<PosScreen> {
                               Row(
                                 children: <Widget>[
                                   Expanded(
-                                    child: DropdownButtonFormField<Customer>(
-                                      initialValue: widget.selectedCustomer,
-                                      decoration: const InputDecoration(
-                                        border: OutlineInputBorder(),
+                                    child: OutlinedButton.icon(
+                                      style: OutlinedButton.styleFrom(
+                                        alignment: Alignment.centerLeft,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 16,
+                                        ),
                                       ),
-                                      items: widget.customers
-                                          .map(
-                                            (Customer customer) =>
-                                                DropdownMenuItem<Customer>(
-                                              value: customer,
-                                              child: Text(customer.displayLabel),
-                                            ),
-                                          )
-                                          .toList(growable: false),
-                                      onChanged: (Customer? selected) {
-                                        if (selected != null) {
-                                          widget.onCustomerSelected(selected);
-                                        }
-                                      },
+                                      onPressed: _selectCustomerDialog,
+                                      icon: const Icon(Icons.search),
+                                      label: Text(
+                                        widget.selectedCustomer?.displayLabel ??
+                                            'Walk-in Customer',
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
@@ -1162,6 +1190,18 @@ class _PosScreenState extends State<PosScreen> {
                                     label: const Text('New'),
                                   ),
                                 ],
+                              ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: _orderDescriptionController,
+                                minLines: 2,
+                                maxLines: 4,
+                                decoration: const InputDecoration(
+                                  border: OutlineInputBorder(),
+                                  labelText: 'Order description (optional)',
+                                  hintText: 'Add notes for this order',
+                                  prefixIcon: Icon(Icons.notes_outlined),
+                                ),
                               ),
                             ],
                           ),
@@ -1312,6 +1352,122 @@ class _PosScreenState extends State<PosScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+class _CustomerSearchDialog extends StatefulWidget {
+  const _CustomerSearchDialog({
+    required this.customers,
+    required this.selectedCustomer,
+  });
+
+  final List<Customer> customers;
+  final Customer? selectedCustomer;
+
+  @override
+  State<_CustomerSearchDialog> createState() => _CustomerSearchDialogState();
+}
+
+class _CustomerSearchDialogState extends State<_CustomerSearchDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  String _searchTerm = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<Customer> _filteredCustomers() {
+    if (_searchTerm.isEmpty) {
+      return widget.customers;
+    }
+
+    final String lower = _searchTerm.toLowerCase();
+    return widget.customers.where((Customer customer) {
+      return customer.name.toLowerCase().contains(lower) ||
+          (customer.phone ?? '').toLowerCase().contains(lower);
+    }).toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Customer> visibleCustomers = _filteredCustomers();
+
+    return AlertDialog(
+      title: const Text('Select customer'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            TextField(
+              controller: _searchController,
+              autofocus: true,
+              onChanged: (String value) {
+                setState(() {
+                  _searchTerm = value.trim();
+                });
+              },
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: 'Search customers',
+                hintText: 'Search by name or phone',
+                prefixIcon: Icon(Icons.search),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 320,
+              child: visibleCustomers.isEmpty
+                  ? const Center(
+                      child: Text('No customers found.'),
+                    )
+                  : ListView.separated(
+                      itemCount: visibleCustomers.length,
+                      separatorBuilder: (BuildContext context, int index) {
+                        return const Divider(height: 1);
+                      },
+                      itemBuilder: (BuildContext context, int index) {
+                        final Customer customer = visibleCustomers[index];
+                        final bool isSelected =
+                            customer.apiId == widget.selectedCustomer?.apiId;
+
+                        return ListTile(
+                          onTap: () => Navigator.of(context).pop(customer),
+                          leading: Icon(
+                            customer.isWalkIn
+                                ? Icons.storefront_outlined
+                                : Icons.person_outline,
+                          ),
+                          title: Text(customer.name),
+                          subtitle: Text(
+                            customer.phone?.isNotEmpty == true
+                                ? customer.phone!
+                                : customer.isWalkIn
+                                    ? 'No linked customer profile'
+                                    : 'No phone',
+                          ),
+                          trailing: isSelected
+                              ? Icon(
+                                  Icons.check_circle,
+                                  color: Theme.of(context).colorScheme.primary,
+                                )
+                              : null,
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+      ],
     );
   }
 }
@@ -2131,6 +2287,7 @@ class Mashroo3ApiClient {
   Future<PosOrder?> createOrder({
     required List<OrderRequestItem> items,
     int? customerId,
+    String? orderDescription,
   }) async {
     final Map<String, dynamic> payload = <String, dynamic>{
       'items': items
@@ -2140,6 +2297,9 @@ class Mashroo3ApiClient {
 
     if (customerId != null) {
       payload['customer_id'] = customerId;
+    }
+    if (orderDescription != null && orderDescription.trim().isNotEmpty) {
+      payload['order_description'] = orderDescription.trim();
     }
 
     final dynamic response =
