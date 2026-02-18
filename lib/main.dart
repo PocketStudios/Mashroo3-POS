@@ -7,6 +7,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const String _apiKeyStorageKey = 'pos_api_key';
 const String _apiBaseUrl = 'https://mashroo3.net';
+const double _qtyEpsilon = 1e-6;
+
+double _roundQty(double value, [int decimals = 3]) {
+  return double.parse(value.toStringAsFixed(decimals));
+}
+
+String _formatQty(double value, [int decimals = 3]) {
+  final String fixed = value.toStringAsFixed(decimals);
+  final String trimmed = fixed.replaceFirst(RegExp(r'\.?0+$'), '');
+  return trimmed.isEmpty ? '0' : trimmed;
+}
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -211,11 +222,12 @@ class _PosAppState extends State<PosApp> {
   PosActionResult _addProductToCart(Product product) {
     final int existingIndex =
         _cartItems.indexWhere((CartItem item) => item.product.id == product.id);
-    final int existingQty =
+    final double existingQty =
         existingIndex == -1 ? 0 : _cartItems[existingIndex].quantity;
+    final double step = product.cartQtyStep;
 
-    final int? availableQty = product.availableQty;
-    if (availableQty != null && existingQty >= availableQty) {
+    final double? availableQty = product.availableQty;
+    if (availableQty != null && existingQty + step > availableQty + _qtyEpsilon) {
       return PosActionResult(
         success: false,
         message: 'No more stock available for ${product.name}.',
@@ -224,11 +236,11 @@ class _PosAppState extends State<PosApp> {
 
     setState(() {
       if (existingIndex == -1) {
-        _cartItems.add(CartItem(product: product, quantity: 1));
+        _cartItems.add(CartItem(product: product, quantity: step));
       } else {
         final CartItem existing = _cartItems[existingIndex];
         _cartItems[existingIndex] =
-            existing.copyWith(quantity: existing.quantity + 1);
+            existing.copyWith(quantity: _roundQty(existing.quantity + step));
       }
     });
 
@@ -276,7 +288,7 @@ class _PosAppState extends State<PosApp> {
     return normalizedLeft.isNotEmpty && normalizedLeft == normalizedRight;
   }
 
-  void _changeQuantity(Product product, int delta) {
+  void _changeQuantity(Product product, double delta) {
     final int index =
         _cartItems.indexWhere((CartItem item) => item.product.id == product.id);
 
@@ -286,13 +298,14 @@ class _PosAppState extends State<PosApp> {
 
     setState(() {
       final CartItem current = _cartItems[index];
-      final int nextQty = current.quantity + delta;
+      final double nextQty = _roundQty(current.quantity + delta);
 
-      if (product.availableQty != null && nextQty > product.availableQty!) {
+      if (product.availableQty != null &&
+          nextQty > product.availableQty! + _qtyEpsilon) {
         return;
       }
 
-      if (nextQty <= 0) {
+      if (nextQty <= _qtyEpsilon) {
         _cartItems.removeAt(index);
       } else {
         _cartItems[index] = current.copyWith(quantity: nextQty);
@@ -383,8 +396,11 @@ class _PosAppState extends State<PosApp> {
     final Customer customer = _selectedCustomer ?? _customers.first;
     final List<OrderRequestItem> requestItems = _cartItems
         .map(
-          (CartItem item) =>
-              OrderRequestItem(productId: item.product.id, quantity: item.quantity),
+          (CartItem item) => OrderRequestItem(
+            productId: item.product.id,
+            quantity: _roundQty(item.quantity),
+            unitCode: item.product.unitCode,
+          ),
         )
         .toList(growable: false);
 
@@ -797,7 +813,7 @@ class PosScreen extends StatefulWidget {
   final Future<PosActionResult> Function() onRefreshData;
   final PosActionResult Function(Product product) onAddProduct;
   final PosActionResult Function(String barcode) onBarcodeSubmit;
-  final void Function(Product product, int delta) onChangeQuantity;
+  final void Function(Product product, double delta) onChangeQuantity;
   final void Function(Customer customer) onCustomerSelected;
   final Future<PosActionResult> Function(String name, String? phone)
       onCreateCustomer;
@@ -1224,6 +1240,7 @@ class _PosScreenState extends State<PosScreen> {
                                   itemBuilder:
                                       (BuildContext context, int index) {
                                     final CartItem item = widget.cartItems[index];
+                                    final double step = item.product.cartQtyStep;
                                     return Padding(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 8,
@@ -1243,9 +1260,9 @@ class _PosScreenState extends State<PosScreen> {
                                                       .titleSmall,
                                                 ),
                                                 Text(
-                                                  _currency.format(
-                                                    item.product.price,
-                                                  ),
+                                                  item.product.isUnitSpecific
+                                                      ? '${_currency.format(item.product.price)} / ${item.product.unitCode}'
+                                                      : _currency.format(item.product.price),
                                                   style: Theme.of(context)
                                                       .textTheme
                                                       .bodySmall,
@@ -1257,18 +1274,20 @@ class _PosScreenState extends State<PosScreen> {
                                             onPressed: () =>
                                                 widget.onChangeQuantity(
                                               item.product,
-                                              -1,
+                                              -step,
                                             ),
                                             icon: const Icon(
                                               Icons.remove_circle_outline,
                                             ),
                                           ),
-                                          Text(item.quantity.toString()),
+                                          Text(
+                                            '${_formatQty(item.quantity)} ${item.product.unitCode}',
+                                          ),
                                           IconButton(
                                             onPressed: () =>
                                                 widget.onChangeQuantity(
                                               item.product,
-                                              1,
+                                              step,
                                             ),
                                             icon: const Icon(
                                               Icons.add_circle_outline,
@@ -1299,14 +1318,8 @@ class _PosScreenState extends State<PosScreen> {
                           child: Column(
                             children: <Widget>[
                               _SummaryRow(
-                                label: 'Items',
-                                value: widget.cartItems
-                                    .fold<int>(
-                                      0,
-                                      (int sum, CartItem item) =>
-                                          sum + item.quantity,
-                                    )
-                                    .toString(),
+                                label: 'Lines',
+                                value: widget.cartItems.length.toString(),
                               ),
                               _SummaryRow(
                                 label: 'Subtotal',
@@ -1575,7 +1588,8 @@ class _ProductCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool outOfStock = product.availableQty != null && product.availableQty! <= 0;
+    final bool outOfStock =
+        product.availableQty != null && product.availableQty! <= _qtyEpsilon;
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -1608,12 +1622,14 @@ class _ProductCard extends StatelessWidget {
                   const SizedBox(height: 6),
                   if (product.availableQty != null)
                     Text(
-                      'Available: ${product.availableQty}',
+                      'Available: ${_formatQty(product.availableQty!)} ${product.unitCode}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   const Spacer(),
                   Text(
-                    currency.format(product.price),
+                    product.isUnitSpecific
+                        ? '${currency.format(product.price)} / ${product.unitCode}'
+                        : currency.format(product.price),
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 8),
@@ -1890,6 +1906,9 @@ class Product {
     required this.price,
     required this.barcode,
     required this.imageUrl,
+    required this.isUnitSpecific,
+    required this.sellUnitCode,
+    required this.sellQtyStep,
     required this.availableQty,
   });
 
@@ -1899,7 +1918,17 @@ class Product {
   final double price;
   final String barcode;
   final String? imageUrl;
-  final int? availableQty;
+  final bool isUnitSpecific;
+  final String sellUnitCode;
+  final double sellQtyStep;
+  final double? availableQty;
+
+  String get unitCode => sellUnitCode.trim().isEmpty ? 'pcs' : sellUnitCode;
+
+  double get cartQtyStep {
+    if (!isUnitSpecific) return 1;
+    return sellQtyStep > 0 ? _roundQty(sellQtyStep) : 1;
+  }
 
   factory Product.fromJson(Map<String, dynamic> json, {required String baseUrl}) {
     final int? id = _toInt(json['id']);
@@ -1925,8 +1954,12 @@ class Product {
       baseUrl,
     );
 
-    final int? availableQty =
-        _toInt(json['available_qty'] ?? json['quantity'] ?? json['stock']);
+    final bool isUnitSpecific = json['is_unit_specific'] == true;
+    final String sellUnitCode = _toString(json['sell_unit_code']) ?? 'pcs';
+    final double sellQtyStep = _toDouble(json['sell_qty_step']) ?? 1;
+    final double? availableQty = _toDouble(
+      json['available_qty'] ?? json['quantity'] ?? json['stock'],
+    );
 
     return Product(
       id: id,
@@ -1935,6 +1968,9 @@ class Product {
       price: price,
       barcode: barcode,
       imageUrl: imageUrl,
+      isUnitSpecific: isUnitSpecific,
+      sellUnitCode: sellUnitCode,
+      sellQtyStep: sellQtyStep,
       availableQty: availableQty,
     );
   }
@@ -1990,11 +2026,11 @@ class CartItem {
   });
 
   final Product product;
-  final int quantity;
+  final double quantity;
 
   double get lineTotal => product.price * quantity;
 
-  CartItem copyWith({int? quantity}) {
+  CartItem copyWith({double? quantity}) {
     return CartItem(
       product: product,
       quantity: quantity ?? this.quantity,
@@ -2004,15 +2040,20 @@ class CartItem {
 
 @immutable
 class OrderRequestItem {
-  const OrderRequestItem({required this.productId, required this.quantity});
+  const OrderRequestItem({
+    required this.productId,
+    required this.quantity,
+    this.unitCode = 'pcs',
+  });
 
   final int productId;
-  final int quantity;
+  final double quantity;
+  final String unitCode;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'product_id': productId,
-      'qty': quantity,
+      'qty': _roundQty(quantity),
     };
   }
 }
@@ -2023,19 +2064,22 @@ class PosOrderItem {
     required this.productId,
     required this.quantity,
     required this.price,
+    required this.unitCode,
   });
 
   final int productId;
-  final int quantity;
+  final double quantity;
   final double price;
+  final String unitCode;
 
   double get lineTotal => price * quantity;
 
   factory PosOrderItem.fromJson(Map<String, dynamic> json) {
     return PosOrderItem(
       productId: _toInt(json['product_id'] ?? json['id']) ?? 0,
-      quantity: _toInt(json['qty'] ?? json['quantity']) ?? 0,
+      quantity: _toDouble(json['qty'] ?? json['quantity']) ?? 0,
       price: _toDouble(json['price']) ?? 0,
+      unitCode: _toString(json['unit_code']) ?? 'pcs',
     );
   }
 
@@ -2044,6 +2088,7 @@ class PosOrderItem {
       productId: item.productId,
       quantity: item.quantity,
       price: price ?? 0,
+      unitCode: item.unitCode,
     );
   }
 }

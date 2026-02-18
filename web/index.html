@@ -18,21 +18,138 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Mashroo3 POS web app.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="mashroo3">
+  <meta name="apple-mobile-web-app-title" content="Mashroo3 POS">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>mashroo3</title>
+  <title>Mashroo3 POS</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    :root {
+      color-scheme: light;
+    }
+
+    body {
+      margin: 0;
+      background: #f5f7fa;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+
+    #web-loading-screen {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 15% 20%, rgba(21, 94, 239, 0.15), transparent 40%),
+        radial-gradient(circle at 80% 10%, rgba(14, 165, 233, 0.12), transparent 45%),
+        #f5f7fa;
+      z-index: 9999;
+      transition: opacity 280ms ease;
+    }
+
+    #web-loading-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .loading-card {
+      width: min(92vw, 360px);
+      text-align: center;
+      border-radius: 18px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12);
+      padding: 24px 20px;
+    }
+
+    .loading-logo {
+      width: 58px;
+      height: 58px;
+      border-radius: 14px;
+      object-fit: cover;
+      box-shadow: 0 6px 20px rgba(21, 94, 239, 0.24);
+      margin-bottom: 12px;
+    }
+
+    .loading-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      color: #0f172a;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .loading-subtitle {
+      margin: 8px 0 16px;
+      color: #475569;
+      font-size: 14px;
+    }
+
+    .loading-spinner {
+      width: 34px;
+      height: 34px;
+      margin: 0 auto;
+      border-radius: 9999px;
+      border: 3px solid rgba(21, 94, 239, 0.2);
+      border-top-color: #155eef;
+      animation: loading-spin 0.9s linear infinite;
+    }
+
+    @keyframes loading-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
 </head>
 <body>
+  <div id="web-loading-screen" role="status" aria-live="polite" aria-label="Loading Mashroo3 POS">
+    <div class="loading-card">
+      <img class="loading-logo" src="icons/Icon-192.png" alt="Mashroo3 POS">
+      <h1 class="loading-title">Mashroo3 POS</h1>
+      <p class="loading-subtitle">Loading your workspace...</p>
+      <div class="loading-spinner" aria-hidden="true"></div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var loadingScreen = document.getElementById("web-loading-screen");
+      if (!loadingScreen) return;
+
+      var dismissed = false;
+      function hideLoadingScreen() {
+        if (dismissed) return;
+        dismissed = true;
+        loadingScreen.classList.add("hidden");
+        setTimeout(function () {
+          if (loadingScreen && loadingScreen.parentNode) {
+            loadingScreen.parentNode.removeChild(loadingScreen);
+          }
+        }, 320);
+      }
+
+      window.addEventListener("flutter-first-frame", hideLoadingScreen, { once: true });
+
+      var observer = new MutationObserver(function () {
+        if (document.querySelector("flt-glass-pane, flutter-view")) {
+          hideLoadingScreen();
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      setTimeout(hideLoadingScreen, 15000);
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
