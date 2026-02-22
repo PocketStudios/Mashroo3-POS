@@ -1,8 +1,10 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:pwa_install/pwa_install.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String _apiKeyStorageKey = 'pos_api_key';
@@ -21,6 +23,9 @@ String _formatQty(double value, [int decimals = 3]) {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  PWAInstall().setup(installCallback: () {
+    debugPrint('APP INSTALLED!');
+  });
   runApp(const PosApp());
 }
 
@@ -377,7 +382,10 @@ class _PosAppState extends State<PosApp> {
     }
   }
 
-  Future<PosActionResult> _createOrder(String? orderDescription) async {
+  Future<PosActionResult> _createOrder(
+    String? orderDescription,
+    double paidAmount,
+  ) async {
     final String? apiKey = _apiKey;
     if (apiKey == null || apiKey.isEmpty) {
       return const PosActionResult(
@@ -394,6 +402,30 @@ class _PosAppState extends State<PosApp> {
     }
 
     final Customer customer = _selectedCustomer ?? _customers.first;
+    final double totalAmount = _roundQty(_cartTotal, 2);
+    final double normalizedPaidAmount = _roundQty(paidAmount, 2);
+
+    if (normalizedPaidAmount < -_qtyEpsilon) {
+      return const PosActionResult(
+        success: false,
+        message: 'Paid amount cannot be negative.',
+      );
+    }
+
+    if (normalizedPaidAmount > totalAmount + _qtyEpsilon) {
+      return const PosActionResult(
+        success: false,
+        message: 'Paid amount cannot exceed the order total.',
+      );
+    }
+
+    if (normalizedPaidAmount + _qtyEpsilon < totalAmount && customer.isWalkIn) {
+      return const PosActionResult(
+        success: false,
+        message:
+            'Select a customer before creating a partial payment order so owed balance can be tracked.',
+      );
+    }
     final List<OrderRequestItem> requestItems = _cartItems
         .map(
           (CartItem item) => OrderRequestItem(
@@ -414,6 +446,7 @@ class _PosAppState extends State<PosApp> {
         customerId: customer.apiId,
         items: requestItems,
         orderDescription: orderDescription,
+        paidAmount: normalizedPaidAmount,
       );
 
       if (!mounted) {
@@ -426,7 +459,8 @@ class _PosAppState extends State<PosApp> {
       final PosOrder fallbackOrder = PosOrder.fromCart(
         customerName: customer.name,
         items: requestItems,
-        total: _cartTotal,
+        total: totalAmount,
+        paid: normalizedPaidAmount,
       );
 
       setState(() {
@@ -435,6 +469,18 @@ class _PosAppState extends State<PosApp> {
       });
 
       final int? orderId = createdOrder?.apiId;
+      final PosOrder orderForFeedback = createdOrder ?? fallbackOrder;
+      final double remainingBalance =
+          _roundQty(orderForFeedback.remainingBalance, 2);
+
+      if (orderId != null && remainingBalance > _qtyEpsilon) {
+        return PosActionResult(
+          success: true,
+          message:
+              'Order #$orderId created. Paid ${NumberFormat.simpleCurrency().format(orderForFeedback.paid)}, remaining ${NumberFormat.simpleCurrency().format(remainingBalance)}.',
+        );
+      }
+
       if (orderId != null) {
         return PosActionResult(
           success: true,
@@ -461,7 +507,7 @@ class _PosAppState extends State<PosApp> {
 
     return _orders.fold<double>(0, (double sum, PosOrder order) {
       if (order.createdAt == null || _isSameDate(order.createdAt!, now)) {
-        return sum + order.total;
+        return sum + order.paid;
       }
       return sum;
     });
@@ -817,7 +863,10 @@ class PosScreen extends StatefulWidget {
   final void Function(Customer customer) onCustomerSelected;
   final Future<PosActionResult> Function(String name, String? phone)
       onCreateCustomer;
-  final Future<PosActionResult> Function(String? orderDescription)
+  final Future<PosActionResult> Function(
+    String? orderDescription,
+    double paidAmount,
+  )
       onCreateOrder;
 
   @override
@@ -830,12 +879,14 @@ class _PosScreenState extends State<PosScreen> {
   final TextEditingController _searchController = TextEditingController();
   final TextEditingController _orderDescriptionController =
       TextEditingController();
+  final TextEditingController _paidNowController = TextEditingController();
   final NumberFormat _currency = NumberFormat.simpleCurrency();
 
   bool _isSigningOut = false;
   bool _isRefreshing = false;
   bool _isCreatingCustomer = false;
   bool _isCreatingOrder = false;
+  bool _allowPartialPayment = false;
   String _searchTerm = '';
 
   @override
@@ -844,6 +895,7 @@ class _PosScreenState extends State<PosScreen> {
     _barcodeFocusNode.dispose();
     _searchController.dispose();
     _orderDescriptionController.dispose();
+    _paidNowController.dispose();
     super.dispose();
   }
 
@@ -863,6 +915,39 @@ class _PosScreenState extends State<PosScreen> {
       return '****';
     }
     return '${key.substring(0, 4)}****';
+  }
+
+  void _promptPwaInstall() {
+    if (!kIsWeb) {
+      _showMessage(
+        const PosActionResult(
+          success: false,
+          message: 'PWA install is only available on web.',
+        ),
+      );
+      return;
+    }
+
+    try {
+      if (!PWAInstall().installPromptEnabled) {
+        _showMessage(
+          const PosActionResult(
+            success: false,
+            message:
+                'Install prompt not available yet. Use Chrome/Edge over HTTPS, interact with the app, then try again.',
+          ),
+        );
+        return;
+      }
+      PWAInstall().promptInstall_();
+    } catch (error) {
+      _showMessage(
+        PosActionResult(
+          success: false,
+          message: 'Could not open install prompt: $error',
+        ),
+      );
+    }
   }
 
   void _submitBarcode() {
@@ -944,6 +1029,68 @@ class _PosScreenState extends State<PosScreen> {
 
   Future<void> _createOrder() async {
     final String trimmedDescription = _orderDescriptionController.text.trim();
+    final double total = _roundQty(widget.cartTotal, 2);
+
+    double paidAmount = total;
+    if (_allowPartialPayment) {
+      final String rawPaidNow = _paidNowController.text.trim();
+      if (rawPaidNow.isEmpty) {
+        _showMessage(
+          const PosActionResult(
+            success: false,
+            message: 'Enter the paid amount for partial payment.',
+          ),
+        );
+        return;
+      }
+
+      final double? parsedPaidNow = double.tryParse(rawPaidNow);
+      if (parsedPaidNow == null) {
+        _showMessage(
+          const PosActionResult(
+            success: false,
+            message: 'Paid amount is invalid.',
+          ),
+        );
+        return;
+      }
+
+      final double normalized = _roundQty(parsedPaidNow, 2);
+      if (normalized < -_qtyEpsilon) {
+        _showMessage(
+          const PosActionResult(
+            success: false,
+            message: 'Paid amount cannot be negative.',
+          ),
+        );
+        return;
+      }
+
+      if (normalized > total + _qtyEpsilon) {
+        _showMessage(
+          const PosActionResult(
+            success: false,
+            message: 'Paid amount cannot exceed order total.',
+          ),
+        );
+        return;
+      }
+
+      paidAmount = normalized;
+    }
+
+    if (_allowPartialPayment &&
+        _remainingAfterCheckout() > _qtyEpsilon &&
+        (widget.selectedCustomer?.isWalkIn ?? true)) {
+      _showMessage(
+        const PosActionResult(
+          success: false,
+          message:
+              'Select a customer before creating a partial payment order so owed balance can be tracked.',
+        ),
+      );
+      return;
+    }
 
     setState(() {
       _isCreatingOrder = true;
@@ -951,6 +1098,7 @@ class _PosScreenState extends State<PosScreen> {
 
     final PosActionResult result = await widget.onCreateOrder(
       trimmedDescription.isEmpty ? null : trimmedDescription,
+      paidAmount,
     );
 
     if (!mounted) {
@@ -961,6 +1109,8 @@ class _PosScreenState extends State<PosScreen> {
       _isCreatingOrder = false;
       if (result.success) {
         _orderDescriptionController.clear();
+        _paidNowController.clear();
+        _allowPartialPayment = false;
       }
     });
 
@@ -997,6 +1147,34 @@ class _PosScreenState extends State<PosScreen> {
     }).toList(growable: false);
   }
 
+  double _effectivePaidNow() {
+    final double total = _roundQty(widget.cartTotal, 2);
+    if (!_allowPartialPayment) {
+      return total;
+    }
+
+    final double? parsed = double.tryParse(_paidNowController.text.trim());
+    if (parsed == null) {
+      return 0;
+    }
+
+    final double normalized = _roundQty(parsed, 2);
+    if (normalized < 0) {
+      return 0;
+    }
+    if (normalized > total) {
+      return total;
+    }
+
+    return normalized;
+  }
+
+  double _remainingAfterCheckout() {
+    final double total = _roundQty(widget.cartTotal, 2);
+    final double remaining = total - _effectivePaidNow();
+    return remaining > 0 ? _roundQty(remaining, 2) : 0;
+  }
+
   @override
   Widget build(BuildContext context) {
     final List<Product> visibleProducts = _filteredProducts();
@@ -1023,6 +1201,12 @@ class _PosScreenState extends State<PosScreen> {
               label: Text('API: ${_maskApiKey(widget.apiKey)}'),
             ),
           ),
+          if (kIsWeb)
+            IconButton(
+              tooltip: 'Install app',
+              onPressed: _promptPwaInstall,
+              icon: const Icon(Icons.download_for_offline),
+            ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: _isRefreshing ? null : _refreshData,
@@ -1267,6 +1451,14 @@ class _PosScreenState extends State<PosScreen> {
                                                       .textTheme
                                                       .bodySmall,
                                                 ),
+                                                if (item.product.barcode
+                                                    .isNotEmpty)
+                                                  Text(
+                                                    'Barcode: ${item.product.barcode}',
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .bodySmall,
+                                                  ),
                                               ],
                                             ),
                                           ),
@@ -1330,6 +1522,49 @@ class _PosScreenState extends State<PosScreen> {
                                 label: 'Total',
                                 value: _currency.format(widget.cartTotal),
                                 isTotal: true,
+                              ),
+                              const SizedBox(height: 8),
+                              SwitchListTile.adaptive(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('Partial payment'),
+                                subtitle: const Text(
+                                  'Collect only part now and keep remaining as owed.',
+                                ),
+                                value: _allowPartialPayment,
+                                onChanged: widget.cartItems.isEmpty
+                                    ? null
+                                    : (bool value) {
+                                        setState(() {
+                                          _allowPartialPayment = value;
+                                          _paidNowController.clear();
+                                        });
+                                      },
+                              ),
+                              if (_allowPartialPayment)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: TextField(
+                                    controller: _paidNowController,
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                      decimal: true,
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                    decoration: const InputDecoration(
+                                      border: OutlineInputBorder(),
+                                      labelText: 'Paid now',
+                                      hintText: 'Enter paid amount',
+                                      prefixIcon: Icon(Icons.payments_outlined),
+                                    ),
+                                  ),
+                                ),
+                              _SummaryRow(
+                                label: 'Paid now',
+                                value: _currency.format(_effectivePaidNow()),
+                              ),
+                              _SummaryRow(
+                                label: 'Remaining',
+                                value: _currency.format(_remainingAfterCheckout()),
                               ),
                               const SizedBox(height: 12),
                               SizedBox(
@@ -1619,6 +1854,15 @@ class _ProductCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
+                  if (product.barcode.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Barcode: ${product.barcode}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                   const SizedBox(height: 6),
                   if (product.availableQty != null)
                     Text(
@@ -1944,10 +2188,11 @@ class Product {
         'No description';
 
     final double price = _toDouble(json['price']) ?? 0;
-    final String barcode = _toString(json['barcode']) ??
-        _toString(json['sku']) ??
-        _toString(json['code']) ??
-        id.toString();
+    final String barcode = (_toString(json['barcode']) ??
+            _toString(json['sku']) ??
+            _toString(json['code']) ??
+            '')
+        .trim();
 
     final String? imageUrl = _normalizeImageUrl(
       json['image_url'] ?? json['image'] ?? json['photo_url'] ?? json['photo'],
@@ -2100,6 +2345,7 @@ class PosOrder {
     required this.createdAt,
     required this.customerName,
     required this.total,
+    required this.paid,
     required this.items,
   });
 
@@ -2107,7 +2353,15 @@ class PosOrder {
   final DateTime? createdAt;
   final String? customerName;
   final double total;
+  final double paid;
   final List<PosOrderItem> items;
+
+  double get remainingBalance {
+    final double remaining = total - paid;
+    return remaining > 0 ? remaining : 0;
+  }
+
+  bool get isFullyPaid => remainingBalance <= _qtyEpsilon;
 
   factory PosOrder.fromJson(
     Map<String, dynamic> json, {
@@ -2134,6 +2388,7 @@ class PosOrder {
           0,
           (double sum, PosOrderItem item) => sum + item.lineTotal,
         );
+    final double paid = _toDouble(json['paid'] ?? json['paid_amount']) ?? total;
 
     String? customerName;
     final dynamic customerNode = json['customer'];
@@ -2150,6 +2405,7 @@ class PosOrder {
       createdAt: _toDateTime(json['created_at'] ?? json['date']),
       customerName: customerName,
       total: total,
+      paid: paid,
       items: parsedItems,
     );
   }
@@ -2158,12 +2414,14 @@ class PosOrder {
     required String customerName,
     required List<OrderRequestItem> items,
     required double total,
+    required double paid,
   }) {
     return PosOrder(
       apiId: null,
       createdAt: DateTime.now(),
       customerName: customerName,
       total: total,
+      paid: paid,
       items: items
           .map((OrderRequestItem item) => PosOrderItem.fromRequestItem(item))
           .toList(growable: false),
@@ -2333,6 +2591,7 @@ class Mashroo3ApiClient {
     required List<OrderRequestItem> items,
     int? customerId,
     String? orderDescription,
+    double? paidAmount,
   }) async {
     final Map<String, dynamic> payload = <String, dynamic>{
       'items': items
@@ -2345,6 +2604,9 @@ class Mashroo3ApiClient {
     }
     if (orderDescription != null && orderDescription.trim().isNotEmpty) {
       payload['order_description'] = orderDescription.trim();
+    }
+    if (paidAmount != null) {
+      payload['paid'] = _roundQty(paidAmount, 2);
     }
 
     final dynamic response =
