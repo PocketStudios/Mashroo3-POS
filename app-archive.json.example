@@ -1,0 +1,49 @@
+{
+  "version": "1.0.1",
+  "shortVersion": 2,
+  "releaseNotes": [
+    {
+      "type": "FEAT",
+      "message": "Improved quantity editing in cart."
+    },
+    {
+      "type": "FIX",
+      "message": "Stability and performance improvements."
+    }
+  ],
+  "platforms": {
+    "windows": {
+      "version": "1.0.1",
+      "shortVersion": 2,
+      "releaseUrl": "https://mashroo3.net/downloads/mashroo3-pos-windows.exe",
+      "releaseNotes": [
+        {
+          "type": "FEAT",
+          "message": "Windows build updates."
+        }
+      ]
+    },
+    "macos": {
+      "version": "1.0.1",
+      "shortVersion": 2,
+      "releaseUrl": "https://mashroo3.net/downloads/mashroo3-pos-macos.zip",
+      "releaseNotes": [
+        {
+          "type": "FEAT",
+          "message": "macOS build updates."
+        }
+      ]
+    },
+    "linux": {
+      "version": "1.0.1",
+      "shortVersion": 2,
+      "releaseUrl": "https://mashroo3.net/downloads/mashroo3-pos-linux.AppImage",
+      "releaseNotes": [
+        {
+          "type": "FEAT",
+          "message": "Linux build updates."
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "app": {
+    "title": "Mashroo3 POS"
+  },
+  "lang": {
+    "switch": "Switch language",
+    "english": "English",
+    "arabic": "Arabic"
+  },
+  "common": {
+    "continue": "Continue",
+    "change_api_key": "Change API key",
+    "cancel": "Cancel",
+    "create": "Create",
+    "retry": "Retry"
+  },
+  "messages": {
+    "data_sync_in_progress": "Data sync is already in progress.",
+    "catalog_customers_synced": "Catalog and customers synced.",
+    "unexpected_error": "Unexpected error {error}",
+    "no_more_stock": "No more stock available for {product}.",
+    "product_added": "{product} added.",
+    "enter_barcode_first": "Enter a barcode first.",
+    "no_product_found_barcode": "No product found for barcode {barcode}.",
+    "missing_api_key_login_again": "Missing API key. Please log in again.",
+    "customer_name_required": "Customer name is required.",
+    "customer_created": "Customer created.",
+    "customer_created_selected": "{name} created and selected.",
+    "cart_empty": "Cart is empty.",
+    "paid_amount_negative": "Paid amount cannot be negative.",
+    "paid_amount_exceeds_order_total": "Paid amount cannot exceed order total.",
+    "select_customer_for_partial": "Select a customer before creating a partial payment order so owed balance can be tracked.",
+    "order_created": "Order created.",
+    "order_created_with_remaining": "Order #{order_id} created. Paid {paid}, remaining {remaining}.",
+    "order_created_success_with_id": "Order #{order_id} created successfully.",
+    "order_created_success": "Order created successfully.",
+    "api_key_required": "API key is required.",
+    "enter_valid_cash_amount": "Enter a valid cash amount.",
+    "pwa_install_web_only": "PWA install is only available on web.",
+    "pwa_install_prompt_not_available": "Install prompt not available yet. Use Chrome/Edge over HTTPS, interact with the app, then try again.",
+    "pwa_install_prompt_error": "Could not open install prompt: {error}",
+    "enter_paid_amount_partial": "Enter the paid amount for partial payment.",
+    "paid_amount_invalid": "Paid amount is invalid.",
+    "enter_quantity": "Enter a quantity.",
+    "quantity_invalid": "Quantity is invalid.",
+    "quantity_negative": "Quantity cannot be negative.",
+    "quantity_whole_number_required": "Quantity must be a whole number for this product.",
+    "quantity_must_follow_step": "Quantity must follow step {step} {unit}.",
+    "only_quantity_available": "Only {available} {unit} available."
+  },
+  "api_key_screen": {
+    "title": "POS Activation",
+    "subtitle": "Enter your API key to connect with Mashroo3 API.",
+    "api_key_label": "API key",
+    "api_key_hint": "Paste API key here"
+  },
+  "opening_cash": {
+    "title": "Open Register",
+    "subtitle": "Enter the opening cash amount currently in the register.",
+    "label": "Opening cash",
+    "hint": "0.00",
+    "start_pos": "Start POS"
+  },
+  "appbar": {
+    "opening": "Opening: {amount}",
+    "sales": "Sales: {amount}",
+    "api": "API: {key}",
+    "install_app": "Install app",
+    "refresh": "Refresh",
+    "logout": "Log out"
+  },
+  "barcode": {
+    "input_label": "Barcode scanner input",
+    "input_hint": "Scan barcode then press Enter",
+    "add_button": "Add"
+  },
+  "search": {
+    "products_label": "Search products"
+  },
+  "products": {
+    "none_from_api": "No products returned from API.",
+    "none_search": "No products matched your search."
+  },
+  "customer": {
+    "section_title": "Customer",
+    "walk_in": "Walk-in Customer",
+    "new_button": "New"
+  },
+  "order": {
+    "description_label": "Order description (optional)",
+    "description_hint": "Add notes for this order",
+    "creating": "Creating...",
+    "create_button": "Create Order"
+  },
+  "cart": {
+    "empty": "Cart is empty.",
+    "remove_item_tooltip": "Remove item",
+    "lines": "Lines",
+    "subtotal": "Subtotal",
+    "total": "Total"
+  },
+  "payment": {
+    "partial_title": "Partial payment",
+    "partial_subtitle": "Collect only part now and keep remaining as owed.",
+    "paid_now_label": "Paid now",
+    "paid_now_hint": "Enter paid amount",
+    "paid_now": "Paid now",
+    "remaining": "Remaining"
+  },
+  "dialogs": {
+    "select_customer_title": "Select customer",
+    "search_customers_label": "Search customers",
+    "search_customers_hint": "Search by name or phone",
+    "no_customers_found": "No customers found.",
+    "no_linked_profile": "No linked customer profile",
+    "no_phone": "No phone",
+    "create_customer_title": "Create customer",
+    "full_name_label": "Full name",
+    "phone_optional_label": "Phone (optional)"
+  },
+  "product": {
+    "barcode": "Barcode: {barcode}",
+    "available": "Available: {qty} {unit}",
+    "out_of_stock": "Out of stock",
+    "add_to_order": "Add to order"
+  },
+  "small_screen": {
+    "title": "This POS view is optimized for laptops and tablets.",
+    "subtitle": "Use a wider screen to access the full product and checkout layout."
+  },
+  "session": {
+    "loading_data": "Loading catalog, customers, and orders...",
+    "error_title": "Could not load POS data"
+  },
+  "updater": {
+    "checking_title": "Checking for updates...",
+    "checking_subtitle": "Please wait while we verify if a required update is available.",
+    "required_title": "Update required",
+    "required_subtitle": "A new desktop version is available. You must update before using Mashroo3 POS.",
+    "current_version": "Current version: {version}",
+    "latest_version": "Latest version: {version}",
+    "whats_new": "What's new",
+    "downloading": "Downloading update...",
+    "downloading_progress": "Downloading... {percent}%",
+    "download_complete": "Download complete. Restart to install the update.",
+    "download_error": "Update failed: {error}",
+    "download_button": "Download update",
+    "restart_button": "Restart to install"
+  },
+  "errors": {
+    "product_id_missing": "Product id is missing.",
+    "customer_id_missing": "Customer id is missing.",
+    "unexpected_create_customer_response": "Unexpected create customer response.",
+    "unsupported_method": "Unsupported method: {method}",
+    "request_failed_status": "Request failed with status {status}.",
+    "api_returned_ok_false": "API returned ok=false for {method} {path}.",
+    "network_error_calling": "Network error while calling {path}: {error}"
+  },
+  "fallback": {
+    "product": "Product",
+    "customer": "Customer",
+    "no_description": "No description"
+  }
+}

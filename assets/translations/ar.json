@@ -1,0 +1,164 @@
+{
+  "app": {
+    "title": "نقطة بيع مشروع"
+  },
+  "lang": {
+    "switch": "تغيير اللغة",
+    "english": "الإنجليزية",
+    "arabic": "العربية"
+  },
+  "common": {
+    "continue": "متابعة",
+    "change_api_key": "تغيير مفتاح API",
+    "cancel": "إلغاء",
+    "create": "إنشاء",
+    "retry": "إعادة المحاولة"
+  },
+  "messages": {
+    "data_sync_in_progress": "تحديث البيانات جارٍ بالفعل.",
+    "catalog_customers_synced": "تمت مزامنة المنتجات والعملاء.",
+    "unexpected_error": "خطأ غير متوقع: {error}",
+    "no_more_stock": "لا يوجد مخزون إضافي للمنتج {product}.",
+    "product_added": "تمت إضافة {product}.",
+    "enter_barcode_first": "أدخل الباركود أولاً.",
+    "no_product_found_barcode": "لم يتم العثور على منتج للباركود {barcode}.",
+    "missing_api_key_login_again": "مفتاح API مفقود. يرجى تسجيل الدخول مرة أخرى.",
+    "customer_name_required": "اسم العميل مطلوب.",
+    "customer_created": "تم إنشاء العميل.",
+    "customer_created_selected": "تم إنشاء {name} واختياره.",
+    "cart_empty": "السلة فارغة.",
+    "paid_amount_negative": "لا يمكن أن يكون المبلغ المدفوع سالبًا.",
+    "paid_amount_exceeds_order_total": "لا يمكن أن يتجاوز المبلغ المدفوع إجمالي الطلب.",
+    "select_customer_for_partial": "اختر عميلًا قبل إنشاء طلب بدفع جزئي حتى يتم تتبع المبلغ المستحق.",
+    "order_created": "تم إنشاء الطلب.",
+    "order_created_with_remaining": "تم إنشاء الطلب رقم {order_id}. المدفوع {paid}، المتبقي {remaining}.",
+    "order_created_success_with_id": "تم إنشاء الطلب رقم {order_id} بنجاح.",
+    "order_created_success": "تم إنشاء الطلب بنجاح.",
+    "api_key_required": "مفتاح API مطلوب.",
+    "enter_valid_cash_amount": "أدخل مبلغ نقدي صحيح.",
+    "pwa_install_web_only": "تثبيت التطبيق متاح على الويب فقط.",
+    "pwa_install_prompt_not_available": "نافذة التثبيت غير متاحة الآن. استخدم Chrome/Edge عبر HTTPS وتفاعل مع التطبيق ثم حاول مرة أخرى.",
+    "pwa_install_prompt_error": "تعذر فتح نافذة التثبيت: {error}",
+    "enter_paid_amount_partial": "أدخل المبلغ المدفوع للدفع الجزئي.",
+    "paid_amount_invalid": "المبلغ المدفوع غير صالح.",
+    "enter_quantity": "أدخل الكمية.",
+    "quantity_invalid": "الكمية غير صالحة.",
+    "quantity_negative": "لا يمكن أن تكون الكمية سالبة.",
+    "quantity_whole_number_required": "يجب أن تكون الكمية عددًا صحيحًا لهذا المنتج.",
+    "quantity_must_follow_step": "يجب أن تتبع الكمية خطوة {step} {unit}.",
+    "only_quantity_available": "المتوفر فقط {available} {unit}."
+  },
+  "api_key_screen": {
+    "title": "تفعيل نقطة البيع",
+    "subtitle": "أدخل مفتاح API للاتصال بواجهة Mashroo3 API.",
+    "api_key_label": "مفتاح API",
+    "api_key_hint": "ألصق مفتاح API هنا"
+  },
+  "opening_cash": {
+    "title": "فتح الصندوق",
+    "subtitle": "أدخل مبلغ النقد الافتتاحي الموجود حاليًا في الصندوق.",
+    "label": "النقد الافتتاحي",
+    "hint": "0.00",
+    "start_pos": "بدء نقطة البيع"
+  },
+  "appbar": {
+    "opening": "الافتتاح: {amount}",
+    "sales": "المبيعات: {amount}",
+    "api": "API: {key}",
+    "install_app": "تثبيت التطبيق",
+    "refresh": "تحديث",
+    "logout": "تسجيل الخروج"
+  },
+  "barcode": {
+    "input_label": "إدخال ماسح الباركود",
+    "input_hint": "امسح الباركود ثم اضغط Enter",
+    "add_button": "إضافة"
+  },
+  "search": {
+    "products_label": "بحث في المنتجات"
+  },
+  "products": {
+    "none_from_api": "لم يتم إرجاع منتجات من API.",
+    "none_search": "لا توجد منتجات مطابقة للبحث."
+  },
+  "customer": {
+    "section_title": "العميل",
+    "walk_in": "عميل مباشر",
+    "new_button": "جديد"
+  },
+  "order": {
+    "description_label": "وصف الطلب (اختياري)",
+    "description_hint": "أضف ملاحظات لهذا الطلب",
+    "creating": "جارٍ الإنشاء...",
+    "create_button": "إنشاء الطلب"
+  },
+  "cart": {
+    "empty": "السلة فارغة.",
+    "remove_item_tooltip": "إزالة العنصر",
+    "lines": "عدد العناصر",
+    "subtotal": "الإجمالي الفرعي",
+    "total": "الإجمالي"
+  },
+  "payment": {
+    "partial_title": "دفع جزئي",
+    "partial_subtitle": "اجمع جزءًا الآن واترك الباقي كمبلغ مستحق.",
+    "paid_now_label": "المدفوع الآن",
+    "paid_now_hint": "أدخل المبلغ المدفوع",
+    "paid_now": "المدفوع الآن",
+    "remaining": "المتبقي"
+  },
+  "dialogs": {
+    "select_customer_title": "اختيار عميل",
+    "search_customers_label": "البحث عن عملاء",
+    "search_customers_hint": "ابحث بالاسم أو رقم الهاتف",
+    "no_customers_found": "لا يوجد عملاء.",
+    "no_linked_profile": "لا يوجد ملف عميل مرتبط",
+    "no_phone": "لا يوجد هاتف",
+    "create_customer_title": "إنشاء عميل",
+    "full_name_label": "الاسم الكامل",
+    "phone_optional_label": "الهاتف (اختياري)"
+  },
+  "product": {
+    "barcode": "الباركود: {barcode}",
+    "available": "المتوفر: {qty} {unit}",
+    "out_of_stock": "نفد المخزون",
+    "add_to_order": "إضافة للطلب"
+  },
+  "small_screen": {
+    "title": "واجهة نقطة البيع محسّنة لأجهزة اللابتوب والأجهزة اللوحية.",
+    "subtitle": "استخدم شاشة أعرض للوصول إلى تخطيط المنتجات والدفع الكامل."
+  },
+  "session": {
+    "loading_data": "جارٍ تحميل المنتجات والعملاء والطلبات...",
+    "error_title": "تعذر تحميل بيانات نقطة البيع"
+  },
+  "updater": {
+    "checking_title": "جارٍ التحقق من التحديثات...",
+    "checking_subtitle": "يرجى الانتظار بينما نتحقق من توفر تحديث إلزامي.",
+    "required_title": "التحديث مطلوب",
+    "required_subtitle": "يوجد إصدار جديد لنسخة سطح المكتب. يجب التحديث قبل استخدام نقطة بيع مشروع 3.",
+    "current_version": "الإصدار الحالي: {version}",
+    "latest_version": "أحدث إصدار: {version}",
+    "whats_new": "ما الجديد",
+    "downloading": "جارٍ تنزيل التحديث...",
+    "downloading_progress": "جارٍ التنزيل... {percent}%",
+    "download_complete": "اكتمل التنزيل. أعد التشغيل لتثبيت التحديث.",
+    "download_error": "فشل التحديث: {error}",
+    "download_button": "تنزيل التحديث",
+    "restart_button": "إعادة التشغيل للتثبيت"
+  },
+  "errors": {
+    "product_id_missing": "معرف المنتج مفقود.",
+    "customer_id_missing": "معرف العميل مفقود.",
+    "unexpected_create_customer_response": "استجابة إنشاء العميل غير متوقعة.",
+    "unsupported_method": "طريقة غير مدعومة: {method}",
+    "request_failed_status": "فشل الطلب بالحالة {status}.",
+    "api_returned_ok_false": "أعاد API القيمة ok=false للطلب {method} {path}.",
+    "network_error_calling": "خطأ شبكة أثناء استدعاء {path}: {error}"
+  },
+  "fallback": {
+    "product": "منتج",
+    "customer": "عميل",
+    "no_description": "بدون وصف"
+  }
+}

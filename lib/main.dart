@@ -1,6 +1,9 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:desktop_updater/desktop_updater.dart';
+import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
@@ -9,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const String _apiKeyStorageKey = 'pos_api_key';
 const String _apiBaseUrl = 'https://mashroo3.net';
+const String _desktopAppArchiveUrl = 'https://mashroo3.net/app-archive.json';
 const double _qtyEpsilon = 1e-6;
 
 double _roundQty(double value, [int decimals = 3]) {
@@ -21,12 +25,337 @@ String _formatQty(double value, [int decimals = 3]) {
   return trimmed.isEmpty ? '0' : trimmed;
 }
 
-void main() {
+String _tr(String key, {Map<String, String>? namedArgs}) {
+  return key.tr(namedArgs: namedArgs);
+}
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await EasyLocalization.ensureInitialized();
   PWAInstall().setup(installCallback: () {
     debugPrint('APP INSTALLED!');
   });
-  runApp(const PosApp());
+  runApp(
+    EasyLocalization(
+      supportedLocales: const <Locale>[Locale('en'), Locale('ar')],
+      path: 'assets/translations',
+      fallbackLocale: const Locale('en'),
+      saveLocale: true,
+      child: const _DesktopUpdateGate(
+        child: PosApp(),
+      ),
+    ),
+  );
+}
+
+class _DesktopUpdateGate extends StatefulWidget {
+  const _DesktopUpdateGate({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_DesktopUpdateGate> createState() => _DesktopUpdateGateState();
+}
+
+class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
+  DesktopUpdaterController? _updaterController;
+  bool _isChecking = true;
+  bool _canLoadApp = false;
+  String? _downloadError;
+
+  bool get _supportsDesktopUpdater {
+    if (kIsWeb) return false;
+    return defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _checkDesktopUpdateGate();
+  }
+
+  @override
+  void dispose() {
+    _updaterController?.removeListener(_onUpdaterChanged);
+    _updaterController?.dispose();
+    super.dispose();
+  }
+
+  void _onUpdaterChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _checkDesktopUpdateGate() async {
+    if (!_supportsDesktopUpdater) {
+      if (!mounted) return;
+      setState(() {
+        _isChecking = false;
+        _canLoadApp = true;
+      });
+      return;
+    }
+
+    final DesktopUpdaterController controller = DesktopUpdaterController(
+      appArchiveUrl: Uri.parse(_desktopAppArchiveUrl),
+    );
+    controller.addListener(_onUpdaterChanged);
+    _updaterController = controller;
+
+    try {
+      await controller.checkVersion().timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      setState(() {
+        _isChecking = false;
+        _canLoadApp = !controller.needUpdate;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      // Fail open: if check fails, continue with the app normally.
+      setState(() {
+        _isChecking = false;
+        _canLoadApp = true;
+      });
+    }
+  }
+
+  Future<void> _downloadAndInstall() async {
+    final DesktopUpdaterController? controller = _updaterController;
+    if (controller == null) return;
+
+    setState(() {
+      _downloadError = null;
+    });
+
+    try {
+      await controller.downloadUpdate();
+      if (!mounted) return;
+      setState(() {});
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _downloadError = '$error';
+      });
+    }
+  }
+
+  Future<void> _restartToInstall() async {
+    final DesktopUpdaterController? controller = _updaterController;
+    if (controller == null) return;
+
+    try {
+      await controller.restartApp();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _downloadError = '$error';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_canLoadApp) {
+      return widget.child;
+    }
+
+    if (_isChecking) {
+      return MaterialApp(
+        debugShowCheckedModeBanner: false,
+        localizationsDelegates: context.localizationDelegates,
+        supportedLocales: context.supportedLocales,
+        locale: context.locale,
+        home: Scaffold(
+          body: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 14),
+                      Text(
+                        _tr('updater.checking_title'),
+                        style: Theme.of(context).textTheme.titleMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _tr('updater.checking_subtitle'),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final DesktopUpdaterController? controller = _updaterController;
+    if (controller == null) {
+      return widget.child;
+    }
+
+    final double rawProgress = controller.downloadProgress;
+    final double clampedProgress = rawProgress < 0
+        ? 0
+        : rawProgress > 1
+            ? 1
+            : rawProgress;
+    final int progressPercent = (clampedProgress * 100).round();
+    final List<ChangeModel> notes = controller.releaseNotes
+        .whereType<ChangeModel>()
+        .toList(growable: false);
+    final bool showProgressBar = controller.isDownloading || controller.isDownloaded;
+
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      localizationsDelegates: context.localizationDelegates,
+      supportedLocales: context.supportedLocales,
+      locale: context.locale,
+      home: Scaffold(
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 680),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        Icon(
+                          Icons.system_update_alt_rounded,
+                          size: 34,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _tr('updater.required_title'),
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(_tr('updater.required_subtitle')),
+                    if ((controller.currentVersion ?? '').isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 8),
+                      Text(
+                        _tr(
+                          'updater.current_version',
+                          namedArgs: <String, String>{
+                            'version': controller.currentVersion ?? '',
+                          },
+                        ),
+                      ),
+                    ],
+                    if ((controller.appVersion ?? '').isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 4),
+                      Text(
+                        _tr(
+                          'updater.latest_version',
+                          namedArgs: <String, String>{
+                            'version': controller.appVersion ?? '',
+                          },
+                        ),
+                      ),
+                    ],
+                    if (notes.isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 16),
+                      Text(
+                        _tr('updater.whats_new'),
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      ...notes.take(8).map((ChangeModel change) {
+                        final String message = change.message.trim();
+                        if (message.isEmpty) return const SizedBox.shrink();
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Text('• $message'),
+                        );
+                      }),
+                    ],
+                    if (showProgressBar) ...<Widget>[
+                      const SizedBox(height: 14),
+                      LinearProgressIndicator(
+                        value: controller.isDownloading ? clampedProgress : 1,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        controller.isDownloaded
+                            ? _tr('updater.download_complete')
+                            : _tr(
+                                'updater.downloading_progress',
+                                namedArgs: <String, String>{
+                                  'percent': '$progressPercent',
+                                },
+                              ),
+                      ),
+                    ],
+                    if (_downloadError != null && _downloadError!.trim().isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 12),
+                      Text(
+                        _tr(
+                          'updater.download_error',
+                          namedArgs: <String, String>{
+                            'error': _downloadError!.trim(),
+                          },
+                        ),
+                        style: TextStyle(color: Theme.of(context).colorScheme.error),
+                      ),
+                    ],
+                    const SizedBox(height: 18),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: controller.isDownloading
+                            ? null
+                            : controller.isDownloaded
+                                ? _restartToInstall
+                                : _downloadAndInstall,
+                        icon: controller.isDownloading
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(
+                                controller.isDownloaded
+                                    ? Icons.restart_alt_rounded
+                                    : Icons.download_rounded,
+                              ),
+                        label: Text(
+                          controller.isDownloading
+                              ? _tr('updater.downloading')
+                              : controller.isDownloaded
+                                  ? _tr('updater.restart_button')
+                                  : _tr('updater.download_button'),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class PosApp extends StatefulWidget {
@@ -199,9 +528,9 @@ class _PosAppState extends State<PosApp> {
 
   Future<PosActionResult> _refreshPosData() async {
     if (_isSessionLoading) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Data sync is already in progress!',
+        message: _tr('messages.data_sync_in_progress'),
       );
     }
 
@@ -210,9 +539,9 @@ class _PosAppState extends State<PosApp> {
       return PosActionResult(success: false, message: _sessionError!);
     }
 
-    return const PosActionResult(
+    return PosActionResult(
       success: true,
-      message: 'Catalog and customers synced.',
+      message: _tr('messages.catalog_customers_synced'),
     );
   }
 
@@ -221,7 +550,10 @@ class _PosAppState extends State<PosApp> {
       return error.message;
     }
 
-    return 'Unexpected error $error';
+    return _tr(
+      'messages.unexpected_error',
+      namedArgs: <String, String>{'error': '$error'},
+    );
   }
 
   PosActionResult _addProductToCart(Product product) {
@@ -235,7 +567,10 @@ class _PosAppState extends State<PosApp> {
     if (availableQty != null && existingQty + step > availableQty + _qtyEpsilon) {
       return PosActionResult(
         success: false,
-        message: 'No more stock available for ${product.name}.',
+        message: _tr(
+          'messages.no_more_stock',
+          namedArgs: <String, String>{'product': product.name},
+        ),
       );
     }
 
@@ -249,15 +584,21 @@ class _PosAppState extends State<PosApp> {
       }
     });
 
-    return PosActionResult(success: true, message: '${product.name} added.');
+    return PosActionResult(
+      success: true,
+      message: _tr(
+        'messages.product_added',
+        namedArgs: <String, String>{'product': product.name},
+      ),
+    );
   }
 
   PosActionResult _addProductByBarcode(String rawBarcode) {
     final String barcode = rawBarcode.trim();
     if (barcode.isEmpty) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Enter a barcode first.',
+        message: _tr('messages.enter_barcode_first'),
       );
     }
 
@@ -272,7 +613,10 @@ class _PosAppState extends State<PosApp> {
     if (matched == null) {
       return PosActionResult(
         success: false,
-        message: 'No product found for barcode $barcode.',
+        message: _tr(
+          'messages.no_product_found_barcode',
+          namedArgs: <String, String>{'barcode': barcode},
+        ),
       );
     }
 
@@ -327,9 +671,9 @@ class _PosAppState extends State<PosApp> {
   Future<PosActionResult> _createCustomer(String name, String? phone) async {
     final String? apiKey = _apiKey;
     if (apiKey == null || apiKey.isEmpty) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Missing API key. Please log in again.',
+        message: _tr('messages.missing_api_key_login_again'),
       );
     }
 
@@ -338,9 +682,9 @@ class _PosAppState extends State<PosApp> {
         phone != null && phone.trim().isNotEmpty ? phone.trim() : null;
 
     if (normalizedName.isEmpty) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Customer name is required.',
+        message: _tr('messages.customer_name_required'),
       );
     }
 
@@ -356,9 +700,9 @@ class _PosAppState extends State<PosApp> {
       );
 
       if (!mounted) {
-        return const PosActionResult(
+        return PosActionResult(
           success: true,
-          message: 'Customer created.',
+          message: _tr('messages.customer_created'),
         );
       }
 
@@ -375,7 +719,10 @@ class _PosAppState extends State<PosApp> {
 
       return PosActionResult(
         success: true,
-        message: '${created.name} created and selected.',
+        message: _tr(
+          'messages.customer_created_selected',
+          namedArgs: <String, String>{'name': created.name},
+        ),
       );
     } catch (error) {
       return PosActionResult(success: false, message: _formatError(error));
@@ -388,16 +735,16 @@ class _PosAppState extends State<PosApp> {
   ) async {
     final String? apiKey = _apiKey;
     if (apiKey == null || apiKey.isEmpty) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Missing API key. Please log in again.',
+        message: _tr('messages.missing_api_key_login_again'),
       );
     }
 
     if (_cartItems.isEmpty) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Cart is empty.',
+        message: _tr('messages.cart_empty'),
       );
     }
 
@@ -406,24 +753,23 @@ class _PosAppState extends State<PosApp> {
     final double normalizedPaidAmount = _roundQty(paidAmount, 2);
 
     if (normalizedPaidAmount < -_qtyEpsilon) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Paid amount cannot be negative.',
+        message: _tr('messages.paid_amount_negative'),
       );
     }
 
     if (normalizedPaidAmount > totalAmount + _qtyEpsilon) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message: 'Paid amount cannot exceed the order total.',
+        message: _tr('messages.paid_amount_exceeds_order_total'),
       );
     }
 
     if (normalizedPaidAmount + _qtyEpsilon < totalAmount && customer.isWalkIn) {
-      return const PosActionResult(
+      return PosActionResult(
         success: false,
-        message:
-            'Select a customer before creating a partial payment order so owed balance can be tracked.',
+        message: _tr('messages.select_customer_for_partial'),
       );
     }
     final List<OrderRequestItem> requestItems = _cartItems
@@ -450,14 +796,14 @@ class _PosAppState extends State<PosApp> {
       );
 
       if (!mounted) {
-        return const PosActionResult(
+        return PosActionResult(
           success: true,
-          message: 'Order created.',
+          message: _tr('messages.order_created'),
         );
       }
 
       final PosOrder fallbackOrder = PosOrder.fromCart(
-        customerName: customer.name,
+        customerName: customer.isWalkIn ? _tr('customer.walk_in') : customer.name,
         items: requestItems,
         total: totalAmount,
         paid: normalizedPaidAmount,
@@ -472,25 +818,40 @@ class _PosAppState extends State<PosApp> {
       final PosOrder orderForFeedback = createdOrder ?? fallbackOrder;
       final double remainingBalance =
           _roundQty(orderForFeedback.remainingBalance, 2);
+      final NumberFormat currency = NumberFormat.currency(
+        locale: context.locale.toLanguageTag(),
+        name: 'USD',
+        symbol: '\$',
+        decimalDigits: 2,
+      );
 
       if (orderId != null && remainingBalance > _qtyEpsilon) {
         return PosActionResult(
           success: true,
-          message:
-              'Order #$orderId created. Paid ${NumberFormat.simpleCurrency().format(orderForFeedback.paid)}, remaining ${NumberFormat.simpleCurrency().format(remainingBalance)}.',
+          message: _tr(
+            'messages.order_created_with_remaining',
+            namedArgs: <String, String>{
+              'order_id': '$orderId',
+              'paid': currency.format(orderForFeedback.paid),
+              'remaining': currency.format(remainingBalance),
+            },
+          ),
         );
       }
 
       if (orderId != null) {
         return PosActionResult(
           success: true,
-          message: 'Order #$orderId created successfully.',
+          message: _tr(
+            'messages.order_created_success_with_id',
+            namedArgs: <String, String>{'order_id': '$orderId'},
+          ),
         );
       }
 
-      return const PosActionResult(
+      return PosActionResult(
         success: true,
-        message: 'Order created successfully.',
+        message: _tr('messages.order_created_success'),
       );
     } catch (error) {
       return PosActionResult(success: false, message: _formatError(error));
@@ -520,8 +881,11 @@ class _PosAppState extends State<PosApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Mashroo3 POS',
+      title: _tr('app.title'),
       debugShowCheckedModeBanner: false,
+      localizationsDelegates: context.localizationDelegates,
+      supportedLocales: context.supportedLocales,
+      locale: context.locale,
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -606,7 +970,7 @@ class _ApiKeyScreenState extends State<ApiKeyScreen> {
     final String value = _apiKeyController.text.trim();
     if (value.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('API key is required.')),
+        SnackBar(content: Text(_tr('messages.api_key_required'))),
       );
       return;
     }
@@ -641,21 +1005,21 @@ class _ApiKeyScreenState extends State<ApiKeyScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    'POS Activation',
+                    _tr('api_key_screen.title'),
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    'Enter your API key to connect with Mashroo3 API.',
+                  Text(
+                    _tr('api_key_screen.subtitle'),
                   ),
                   const SizedBox(height: 20),
                   TextField(
                     controller: _apiKeyController,
                     autofocus: true,
                     onSubmitted: (_) => _submit(),
-                    decoration: const InputDecoration(
-                      labelText: 'API key',
-                      hintText: 'Paste API key here',
+                    decoration: InputDecoration(
+                      labelText: _tr('api_key_screen.api_key_label'),
+                      hintText: _tr('api_key_screen.api_key_hint'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -668,9 +1032,9 @@ class _ApiKeyScreenState extends State<ApiKeyScreen> {
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Continue'),
+                          : Text(_tr('common.continue')),
                     ),
                   ),
                 ],
@@ -714,7 +1078,7 @@ class _OpeningCashScreenState extends State<OpeningCashScreen> {
 
     if (parsed == null || parsed < 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid cash amount.')),
+        SnackBar(content: Text(_tr('messages.enter_valid_cash_amount'))),
       );
       return;
     }
@@ -765,12 +1129,12 @@ class _OpeningCashScreenState extends State<OpeningCashScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    'Open Register',
+                    _tr('opening_cash.title'),
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    'Enter the opening cash amount currently in the register.',
+                  Text(
+                    _tr('opening_cash.subtitle'),
                   ),
                   const SizedBox(height: 20),
                   TextField(
@@ -781,9 +1145,9 @@ class _OpeningCashScreenState extends State<OpeningCashScreen> {
                       decimal: true,
                     ),
                     onSubmitted: (_) => _submit(),
-                    decoration: const InputDecoration(
-                      labelText: 'Opening cash',
-                      hintText: '0.00',
+                    decoration: InputDecoration(
+                      labelText: _tr('opening_cash.label'),
+                      hintText: _tr('opening_cash.hint'),
                       prefixText: '\$',
                       border: OutlineInputBorder(),
                     ),
@@ -797,9 +1161,9 @@ class _OpeningCashScreenState extends State<OpeningCashScreen> {
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Start POS'),
+                          : Text(_tr('opening_cash.start_pos')),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -811,9 +1175,9 @@ class _OpeningCashScreenState extends State<OpeningCashScreen> {
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Change API key'),
+                          : Text(_tr('common.change_api_key')),
                     ),
                   ),
                 ],
@@ -880,7 +1244,9 @@ class _PosScreenState extends State<PosScreen> {
   final TextEditingController _orderDescriptionController =
       TextEditingController();
   final TextEditingController _paidNowController = TextEditingController();
-  final NumberFormat _currency = NumberFormat.simpleCurrency();
+  final Map<int, TextEditingController> _qtyControllers =
+      <int, TextEditingController>{};
+  final Map<int, FocusNode> _qtyFocusNodes = <int, FocusNode>{};
 
   bool _isSigningOut = false;
   bool _isRefreshing = false;
@@ -889,6 +1255,14 @@ class _PosScreenState extends State<PosScreen> {
   bool _allowPartialPayment = false;
   String _searchTerm = '';
 
+  NumberFormat get _currency =>
+      NumberFormat.currency(
+        locale: context.locale.toLanguageTag(),
+        name: 'USD',
+        symbol: '\$',
+        decimalDigits: 2,
+      );
+
   @override
   void dispose() {
     _barcodeController.dispose();
@@ -896,6 +1270,12 @@ class _PosScreenState extends State<PosScreen> {
     _searchController.dispose();
     _orderDescriptionController.dispose();
     _paidNowController.dispose();
+    for (final TextEditingController controller in _qtyControllers.values) {
+      controller.dispose();
+    }
+    for (final FocusNode focusNode in _qtyFocusNodes.values) {
+      focusNode.dispose();
+    }
     super.dispose();
   }
 
@@ -920,9 +1300,9 @@ class _PosScreenState extends State<PosScreen> {
   void _promptPwaInstall() {
     if (!kIsWeb) {
       _showMessage(
-        const PosActionResult(
+        PosActionResult(
           success: false,
-          message: 'PWA install is only available on web.',
+          message: _tr('messages.pwa_install_web_only'),
         ),
       );
       return;
@@ -931,10 +1311,9 @@ class _PosScreenState extends State<PosScreen> {
     try {
       if (!PWAInstall().installPromptEnabled) {
         _showMessage(
-          const PosActionResult(
+          PosActionResult(
             success: false,
-            message:
-                'Install prompt not available yet. Use Chrome/Edge over HTTPS, interact with the app, then try again.',
+            message: _tr('messages.pwa_install_prompt_not_available'),
           ),
         );
         return;
@@ -944,7 +1323,10 @@ class _PosScreenState extends State<PosScreen> {
       _showMessage(
         PosActionResult(
           success: false,
-          message: 'Could not open install prompt: $error',
+          message: _tr(
+            'messages.pwa_install_prompt_error',
+            namedArgs: <String, String>{'error': '$error'},
+          ),
         ),
       );
     }
@@ -1036,9 +1418,9 @@ class _PosScreenState extends State<PosScreen> {
       final String rawPaidNow = _paidNowController.text.trim();
       if (rawPaidNow.isEmpty) {
         _showMessage(
-          const PosActionResult(
+          PosActionResult(
             success: false,
-            message: 'Enter the paid amount for partial payment.',
+            message: _tr('messages.enter_paid_amount_partial'),
           ),
         );
         return;
@@ -1047,9 +1429,9 @@ class _PosScreenState extends State<PosScreen> {
       final double? parsedPaidNow = double.tryParse(rawPaidNow);
       if (parsedPaidNow == null) {
         _showMessage(
-          const PosActionResult(
+          PosActionResult(
             success: false,
-            message: 'Paid amount is invalid.',
+            message: _tr('messages.paid_amount_invalid'),
           ),
         );
         return;
@@ -1058,9 +1440,9 @@ class _PosScreenState extends State<PosScreen> {
       final double normalized = _roundQty(parsedPaidNow, 2);
       if (normalized < -_qtyEpsilon) {
         _showMessage(
-          const PosActionResult(
+          PosActionResult(
             success: false,
-            message: 'Paid amount cannot be negative.',
+            message: _tr('messages.paid_amount_negative'),
           ),
         );
         return;
@@ -1068,9 +1450,9 @@ class _PosScreenState extends State<PosScreen> {
 
       if (normalized > total + _qtyEpsilon) {
         _showMessage(
-          const PosActionResult(
+          PosActionResult(
             success: false,
-            message: 'Paid amount cannot exceed order total.',
+            message: _tr('messages.paid_amount_exceeds_order_total'),
           ),
         );
         return;
@@ -1083,10 +1465,9 @@ class _PosScreenState extends State<PosScreen> {
         _remainingAfterCheckout() > _qtyEpsilon &&
         (widget.selectedCustomer?.isWalkIn ?? true)) {
       _showMessage(
-        const PosActionResult(
+        PosActionResult(
           success: false,
-          message:
-              'Select a customer before creating a partial payment order so owed balance can be tracked.',
+          message: _tr('messages.select_customer_for_partial'),
         ),
       );
       return;
@@ -1175,40 +1556,275 @@ class _PosScreenState extends State<PosScreen> {
     return remaining > 0 ? _roundQty(remaining, 2) : 0;
   }
 
+  bool _isStepAligned(double value, double step) {
+    if (step <= _qtyEpsilon) {
+      return true;
+    }
+    final double scaled = value / step;
+    return (scaled - scaled.roundToDouble()).abs() <= 0.001;
+  }
+
+  void _pruneQtyEditors() {
+    final Set<int> validIds =
+        widget.cartItems.map((CartItem item) => item.product.id).toSet();
+    final List<int> staleIds = _qtyControllers.keys
+        .where((int id) => !validIds.contains(id))
+        .toList(growable: false);
+
+    for (final int id in staleIds) {
+      _qtyControllers.remove(id)?.dispose();
+      _qtyFocusNodes.remove(id)?.dispose();
+    }
+  }
+
+  TextEditingController _qtyControllerFor(CartItem item) {
+    final int productId = item.product.id;
+    final FocusNode focusNode = _qtyFocusNodes.putIfAbsent(
+      productId,
+      () => FocusNode(),
+    );
+    final TextEditingController controller = _qtyControllers.putIfAbsent(
+      productId,
+      () => TextEditingController(text: _formatQty(item.quantity)),
+    );
+
+    final String expectedValue = _formatQty(item.quantity);
+    if (!focusNode.hasFocus && controller.text != expectedValue) {
+      controller.text = expectedValue;
+    }
+
+    return controller;
+  }
+
+  FocusNode _qtyFocusNodeFor(int productId) {
+    return _qtyFocusNodes.putIfAbsent(productId, () => FocusNode());
+  }
+
+  bool _submitTypedQuantity(
+    CartItem item,
+    String rawValue, {
+    bool showError = true,
+    bool requestMainFocus = true,
+  }) {
+    final int liveIndex = widget.cartItems.indexWhere(
+      (CartItem current) => current.product.id == item.product.id,
+    );
+    if (liveIndex == -1) {
+      if (requestMainFocus) {
+        _barcodeFocusNode.requestFocus();
+      }
+      return false;
+    }
+
+    final CartItem currentItem = widget.cartItems[liveIndex];
+    final Product product = currentItem.product;
+
+    final String normalizedRaw = rawValue.trim().replaceAll(',', '.');
+    if (normalizedRaw.isEmpty) {
+      if (showError) {
+        _showMessage(
+          PosActionResult(
+            success: false,
+            message: _tr('messages.enter_quantity'),
+          ),
+        );
+      }
+      return false;
+    }
+
+    final double? parsed = double.tryParse(normalizedRaw);
+    if (parsed == null) {
+      if (showError) {
+        _showMessage(
+          PosActionResult(
+            success: false,
+            message: _tr('messages.quantity_invalid'),
+          ),
+        );
+      }
+      return false;
+    }
+
+    final double nextQty = _roundQty(parsed);
+    if (nextQty < -_qtyEpsilon) {
+      if (showError) {
+        _showMessage(
+          PosActionResult(
+            success: false,
+            message: _tr('messages.quantity_negative'),
+          ),
+        );
+      }
+      return false;
+    }
+
+    if (nextQty <= _qtyEpsilon) {
+      widget.onChangeQuantity(product, -currentItem.quantity);
+      if (requestMainFocus) {
+        _barcodeFocusNode.requestFocus();
+      }
+      return true;
+    }
+
+    if (!product.isUnitSpecific &&
+        (nextQty - nextQty.roundToDouble()).abs() > 0.001) {
+      if (showError) {
+        _showMessage(
+          PosActionResult(
+            success: false,
+            message: _tr('messages.quantity_whole_number_required'),
+          ),
+        );
+      }
+      return false;
+    }
+
+    final double step = product.cartQtyStep;
+    if (product.isUnitSpecific && !_isStepAligned(nextQty, step)) {
+      if (showError) {
+        _showMessage(
+          PosActionResult(
+            success: false,
+            message: _tr(
+              'messages.quantity_must_follow_step',
+              namedArgs: <String, String>{
+                'step': _formatQty(step),
+                'unit': product.unitCode,
+              },
+            ),
+          ),
+        );
+      }
+      return false;
+    }
+
+    final double? availableQty = product.availableQty;
+    if (availableQty != null && nextQty > availableQty + _qtyEpsilon) {
+      if (showError) {
+        _showMessage(
+          PosActionResult(
+            success: false,
+            message: _tr(
+              'messages.only_quantity_available',
+              namedArgs: <String, String>{
+                'available': _formatQty(availableQty),
+                'unit': product.unitCode,
+              },
+            ),
+          ),
+        );
+      }
+      return false;
+    }
+
+    final double delta = _roundQty(nextQty - currentItem.quantity);
+    if (delta.abs() <= _qtyEpsilon) {
+      if (requestMainFocus) {
+        _barcodeFocusNode.requestFocus();
+      }
+      return true;
+    }
+
+    widget.onChangeQuantity(product, delta);
+    if (requestMainFocus) {
+      _barcodeFocusNode.requestFocus();
+    }
+    return true;
+  }
+
+  void _applyStepChange(CartItem item, bool increase) {
+    final TextEditingController controller = _qtyControllerFor(item);
+    _submitTypedQuantity(
+      item,
+      controller.text,
+      showError: false,
+      requestMainFocus: false,
+    );
+
+    final int index = widget.cartItems
+        .indexWhere((CartItem current) => current.product.id == item.product.id);
+    if (index == -1) {
+      _barcodeFocusNode.requestFocus();
+      return;
+    }
+
+    final CartItem latest = widget.cartItems[index];
+    final double step = latest.product.cartQtyStep;
+    widget.onChangeQuantity(latest.product, increase ? step : -step);
+    _barcodeFocusNode.requestFocus();
+  }
+
   @override
   Widget build(BuildContext context) {
     final List<Product> visibleProducts = _filteredProducts();
+    _pruneQtyEditors();
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Mashroo3 POS'),
+        title: Text(_tr('app.title')),
         actions: <Widget>[
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Chip(
-              label: Text('Opening: ${_currency.format(widget.openingCash)}'),
+              label: Text(
+                _tr(
+                  'appbar.opening',
+                  namedArgs: <String, String>{
+                    'amount': _currency.format(widget.openingCash),
+                  },
+                ),
+              ),
             ),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Chip(
-              label: Text('Sales: ${_currency.format(widget.todaySales)}'),
+              label: Text(
+                _tr(
+                  'appbar.sales',
+                  namedArgs: <String, String>{
+                    'amount': _currency.format(widget.todaySales),
+                  },
+                ),
+              ),
             ),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Chip(
-              label: Text('API: ${_maskApiKey(widget.apiKey)}'),
+              label: Text(
+                _tr(
+                  'appbar.api',
+                  namedArgs: <String, String>{'key': _maskApiKey(widget.apiKey)},
+                ),
+              ),
             ),
+          ),
+          PopupMenuButton<Locale>(
+            tooltip: _tr('lang.switch'),
+            icon: const Icon(Icons.language),
+            onSelected: (Locale locale) {
+              context.setLocale(locale);
+            },
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<Locale>>[
+              PopupMenuItem<Locale>(
+                value: const Locale('en'),
+                child: Text(_tr('lang.english')),
+              ),
+              PopupMenuItem<Locale>(
+                value: const Locale('ar'),
+                child: Text(_tr('lang.arabic')),
+              ),
+            ],
           ),
           if (kIsWeb)
             IconButton(
-              tooltip: 'Install app',
+              tooltip: _tr('appbar.install_app'),
               onPressed: _promptPwaInstall,
               icon: const Icon(Icons.download_for_offline),
             ),
           IconButton(
-            tooltip: 'Refresh',
+            tooltip: _tr('appbar.refresh'),
             onPressed: _isRefreshing ? null : _refreshData,
             icon: _isRefreshing
                 ? const SizedBox(
@@ -1223,7 +1839,7 @@ class _PosScreenState extends State<PosScreen> {
             child: TextButton.icon(
               onPressed: _isSigningOut ? null : _signOut,
               icon: const Icon(Icons.logout),
-              label: const Text('Log out'),
+              label: Text(_tr('appbar.logout')),
             ),
           ),
         ],
@@ -1261,11 +1877,10 @@ class _PosScreenState extends State<PosScreen> {
                                       focusNode: _barcodeFocusNode,
                                       autofocus: true,
                                       onSubmitted: (_) => _submitBarcode(),
-                                      decoration: const InputDecoration(
+                                      decoration: InputDecoration(
                                         border: OutlineInputBorder(),
-                                        labelText: 'Barcode scanner input',
-                                        hintText:
-                                            'Scan barcode then press Enter',
+                                        labelText: _tr('barcode.input_label'),
+                                        hintText: _tr('barcode.input_hint'),
                                         prefixIcon: Icon(Icons.qr_code_scanner),
                                       ),
                                     ),
@@ -1274,7 +1889,7 @@ class _PosScreenState extends State<PosScreen> {
                                   FilledButton.icon(
                                     onPressed: _submitBarcode,
                                     icon: const Icon(Icons.add_shopping_cart),
-                                    label: const Text('Add'),
+                                    label: Text(_tr('barcode.add_button')),
                                   ),
                                 ],
                               ),
@@ -1286,9 +1901,9 @@ class _PosScreenState extends State<PosScreen> {
                                     _searchTerm = value.trim();
                                   });
                                 },
-                                decoration: const InputDecoration(
+                                decoration: InputDecoration(
                                   border: OutlineInputBorder(),
-                                  labelText: 'Search products',
+                                  labelText: _tr('search.products_label'),
                                   prefixIcon: Icon(Icons.search),
                                 ),
                               ),
@@ -1303,8 +1918,8 @@ class _PosScreenState extends State<PosScreen> {
                                 child: Center(
                                   child: Text(
                                     widget.products.isEmpty
-                                        ? 'No products returned from API.'
-                                        : 'No products matched your search.',
+                                        ? _tr('products.none_from_api')
+                                        : _tr('products.none_search'),
                                   ),
                                 ),
                               )
@@ -1348,7 +1963,7 @@ class _PosScreenState extends State<PosScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
                               Text(
-                                'Customer',
+                                _tr('customer.section_title'),
                                 style: Theme.of(context).textTheme.titleMedium,
                               ),
                               const SizedBox(height: 10),
@@ -1367,7 +1982,7 @@ class _PosScreenState extends State<PosScreen> {
                                       icon: const Icon(Icons.search),
                                       label: Text(
                                         widget.selectedCustomer?.displayLabel ??
-                                            'Walk-in Customer',
+                                            _tr('customer.walk_in'),
                                         overflow: TextOverflow.ellipsis,
                                         maxLines: 1,
                                       ),
@@ -1387,7 +2002,7 @@ class _PosScreenState extends State<PosScreen> {
                                             ),
                                           )
                                         : const Icon(Icons.person_add_alt),
-                                    label: const Text('New'),
+                                    label: Text(_tr('customer.new_button')),
                                   ),
                                 ],
                               ),
@@ -1396,10 +2011,10 @@ class _PosScreenState extends State<PosScreen> {
                                 controller: _orderDescriptionController,
                                 minLines: 2,
                                 maxLines: 4,
-                                decoration: const InputDecoration(
+                                decoration: InputDecoration(
                                   border: OutlineInputBorder(),
-                                  labelText: 'Order description (optional)',
-                                  hintText: 'Add notes for this order',
+                                  labelText: _tr('order.description_label'),
+                                  hintText: _tr('order.description_hint'),
                                   prefixIcon: Icon(Icons.notes_outlined),
                                 ),
                               ),
@@ -1411,8 +2026,8 @@ class _PosScreenState extends State<PosScreen> {
                       Expanded(
                         child: Card(
                           child: widget.cartItems.isEmpty
-                              ? const Center(
-                                  child: Text('Cart is empty.'),
+                              ? Center(
+                                  child: Text(_tr('cart.empty')),
                                 )
                               : ListView.separated(
                                   padding: const EdgeInsets.all(8),
@@ -1424,7 +2039,10 @@ class _PosScreenState extends State<PosScreen> {
                                   itemBuilder:
                                       (BuildContext context, int index) {
                                     final CartItem item = widget.cartItems[index];
-                                    final double step = item.product.cartQtyStep;
+                                    final TextEditingController qtyController =
+                                        _qtyControllerFor(item);
+                                    final FocusNode qtyFocusNode =
+                                        _qtyFocusNodeFor(item.product.id);
                                     return Padding(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 8,
@@ -1454,7 +2072,13 @@ class _PosScreenState extends State<PosScreen> {
                                                 if (item.product.barcode
                                                     .isNotEmpty)
                                                   Text(
-                                                    'Barcode: ${item.product.barcode}',
+                                                    _tr(
+                                                      'product.barcode',
+                                                      namedArgs: <String, String>{
+                                                        'barcode':
+                                                            item.product.barcode,
+                                                      },
+                                                    ),
                                                     style: Theme.of(context)
                                                         .textTheme
                                                         .bodySmall,
@@ -1464,25 +2088,75 @@ class _PosScreenState extends State<PosScreen> {
                                           ),
                                           IconButton(
                                             onPressed: () =>
-                                                widget.onChangeQuantity(
-                                              item.product,
-                                              -step,
-                                            ),
+                                                _applyStepChange(item, false),
                                             icon: const Icon(
                                               Icons.remove_circle_outline,
                                             ),
                                           ),
-                                          Text(
-                                            '${_formatQty(item.quantity)} ${item.product.unitCode}',
+                                          SizedBox(
+                                            width: 148,
+                                            child: TextField(
+                                              controller: qtyController,
+                                              focusNode: qtyFocusNode,
+                                              textAlign: TextAlign.center,
+                                              textInputAction:
+                                                  TextInputAction.done,
+                                              keyboardType:
+                                                  const TextInputType.numberWithOptions(
+                                                decimal: true,
+                                              ),
+                                              decoration: InputDecoration(
+                                                isDense: true,
+                                                border:
+                                                    const OutlineInputBorder(),
+                                                contentPadding:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 8,
+                                                  vertical: 10,
+                                                ),
+                                                suffixText:
+                                                    item.product.unitCode,
+                                              ),
+                                              onSubmitted:
+                                                  (String value) {
+                                                _submitTypedQuantity(
+                                                  item,
+                                                  value,
+                                                );
+                                              },
+                                              onEditingComplete: () {
+                                                _submitTypedQuantity(
+                                                  item,
+                                                  qtyController.text,
+                                                );
+                                              },
+                                              onTapOutside:
+                                                  (PointerDownEvent event) {
+                                                _submitTypedQuantity(
+                                                  item,
+                                                  qtyController.text,
+                                                );
+                                              },
+                                            ),
                                           ),
                                           IconButton(
                                             onPressed: () =>
-                                                widget.onChangeQuantity(
-                                              item.product,
-                                              step,
-                                            ),
+                                                _applyStepChange(item, true),
                                             icon: const Icon(
                                               Icons.add_circle_outline,
+                                            ),
+                                          ),
+                                          IconButton(
+                                            tooltip:
+                                                _tr('cart.remove_item_tooltip'),
+                                            onPressed: () =>
+                                                widget.onChangeQuantity(
+                                              item.product,
+                                              -item.quantity,
+                                            ),
+                                            color: Colors.red.shade700,
+                                            icon: const Icon(
+                                              Icons.shopping_basket_outlined,
                                             ),
                                           ),
                                           const SizedBox(width: 8),
@@ -1510,25 +2184,25 @@ class _PosScreenState extends State<PosScreen> {
                           child: Column(
                             children: <Widget>[
                               _SummaryRow(
-                                label: 'Lines',
+                                label: _tr('cart.lines'),
                                 value: widget.cartItems.length.toString(),
                               ),
                               _SummaryRow(
-                                label: 'Subtotal',
+                                label: _tr('cart.subtotal'),
                                 value: _currency.format(widget.cartTotal),
                               ),
                               const Divider(height: 20),
                               _SummaryRow(
-                                label: 'Total',
+                                label: _tr('cart.total'),
                                 value: _currency.format(widget.cartTotal),
                                 isTotal: true,
                               ),
                               const SizedBox(height: 8),
                               SwitchListTile.adaptive(
                                 contentPadding: EdgeInsets.zero,
-                                title: const Text('Partial payment'),
-                                subtitle: const Text(
-                                  'Collect only part now and keep remaining as owed.',
+                                title: Text(_tr('payment.partial_title')),
+                                subtitle: Text(
+                                  _tr('payment.partial_subtitle'),
                                 ),
                                 value: _allowPartialPayment,
                                 onChanged: widget.cartItems.isEmpty
@@ -1550,20 +2224,20 @@ class _PosScreenState extends State<PosScreen> {
                                       decimal: true,
                                     ),
                                     onChanged: (_) => setState(() {}),
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                       border: OutlineInputBorder(),
-                                      labelText: 'Paid now',
-                                      hintText: 'Enter paid amount',
+                                      labelText: _tr('payment.paid_now_label'),
+                                      hintText: _tr('payment.paid_now_hint'),
                                       prefixIcon: Icon(Icons.payments_outlined),
                                     ),
                                   ),
                                 ),
                               _SummaryRow(
-                                label: 'Paid now',
+                                label: _tr('payment.paid_now'),
                                 value: _currency.format(_effectivePaidNow()),
                               ),
                               _SummaryRow(
-                                label: 'Remaining',
+                                label: _tr('payment.remaining'),
                                 value: _currency.format(_remainingAfterCheckout()),
                               ),
                               const SizedBox(height: 12),
@@ -1583,8 +2257,8 @@ class _PosScreenState extends State<PosScreen> {
                                       : const Icon(Icons.receipt_long),
                                   label: Text(
                                     _isCreatingOrder
-                                        ? 'Creating...'
-                                        : 'Create Order',
+                                        ? _tr('order.creating')
+                                        : _tr('order.create_button'),
                                   ),
                                 ),
                               ),
@@ -1644,7 +2318,7 @@ class _CustomerSearchDialogState extends State<_CustomerSearchDialog> {
     final List<Customer> visibleCustomers = _filteredCustomers();
 
     return AlertDialog(
-      title: const Text('Select customer'),
+      title: Text(_tr('dialogs.select_customer_title')),
       content: SizedBox(
         width: 460,
         child: Column(
@@ -1658,10 +2332,10 @@ class _CustomerSearchDialogState extends State<_CustomerSearchDialog> {
                   _searchTerm = value.trim();
                 });
               },
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 border: OutlineInputBorder(),
-                labelText: 'Search customers',
-                hintText: 'Search by name or phone',
+                labelText: _tr('dialogs.search_customers_label'),
+                hintText: _tr('dialogs.search_customers_hint'),
                 prefixIcon: Icon(Icons.search),
               ),
             ),
@@ -1669,8 +2343,8 @@ class _CustomerSearchDialogState extends State<_CustomerSearchDialog> {
             SizedBox(
               height: 320,
               child: visibleCustomers.isEmpty
-                  ? const Center(
-                      child: Text('No customers found.'),
+                  ? Center(
+                      child: Text(_tr('dialogs.no_customers_found')),
                     )
                   : ListView.separated(
                       itemCount: visibleCustomers.length,
@@ -1694,8 +2368,8 @@ class _CustomerSearchDialogState extends State<_CustomerSearchDialog> {
                             customer.phone?.isNotEmpty == true
                                 ? customer.phone!
                                 : customer.isWalkIn
-                                    ? 'No linked customer profile'
-                                    : 'No phone',
+                                    ? _tr('dialogs.no_linked_profile')
+                                    : _tr('dialogs.no_phone'),
                           ),
                           trailing: isSelected
                               ? Icon(
@@ -1713,7 +2387,7 @@ class _CustomerSearchDialogState extends State<_CustomerSearchDialog> {
       actions: <Widget>[
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(_tr('common.cancel')),
         ),
       ],
     );
@@ -1745,7 +2419,7 @@ class _CreateCustomerDialogState extends State<_CreateCustomerDialog> {
 
     if (name.isEmpty) {
       setState(() {
-        _error = 'Customer name is required.';
+        _error = _tr('messages.customer_name_required');
       });
       return;
     }
@@ -1761,7 +2435,7 @@ class _CreateCustomerDialogState extends State<_CreateCustomerDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Create customer'),
+      title: Text(_tr('dialogs.create_customer_title')),
       content: SizedBox(
         width: 420,
         child: Column(
@@ -1771,8 +2445,8 @@ class _CreateCustomerDialogState extends State<_CreateCustomerDialog> {
               controller: _nameController,
               autofocus: true,
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                labelText: 'Full name',
+              decoration: InputDecoration(
+                labelText: _tr('dialogs.full_name_label'),
                 border: OutlineInputBorder(),
               ),
             ),
@@ -1780,8 +2454,8 @@ class _CreateCustomerDialogState extends State<_CreateCustomerDialog> {
             TextField(
               controller: _phoneController,
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                labelText: 'Phone (optional)',
+              decoration: InputDecoration(
+                labelText: _tr('dialogs.phone_optional_label'),
                 border: OutlineInputBorder(),
               ),
             ),
@@ -1799,11 +2473,11 @@ class _CreateCustomerDialogState extends State<_CreateCustomerDialog> {
       actions: <Widget>[
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(_tr('common.cancel')),
         ),
         FilledButton(
           onPressed: _submit,
-          child: const Text('Create'),
+          child: Text(_tr('common.create')),
         ),
       ],
     );
@@ -1857,7 +2531,10 @@ class _ProductCard extends StatelessWidget {
                   if (product.barcode.isNotEmpty) ...<Widget>[
                     const SizedBox(height: 4),
                     Text(
-                      'Barcode: ${product.barcode}',
+                      _tr(
+                        'product.barcode',
+                        namedArgs: <String, String>{'barcode': product.barcode},
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.bodySmall,
@@ -1866,7 +2543,13 @@ class _ProductCard extends StatelessWidget {
                   const SizedBox(height: 6),
                   if (product.availableQty != null)
                     Text(
-                      'Available: ${_formatQty(product.availableQty!)} ${product.unitCode}',
+                      _tr(
+                        'product.available',
+                        namedArgs: <String, String>{
+                          'qty': _formatQty(product.availableQty!),
+                          'unit': product.unitCode,
+                        },
+                      ),
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   const Spacer(),
@@ -1882,7 +2565,11 @@ class _ProductCard extends StatelessWidget {
                     child: FilledButton.tonalIcon(
                       onPressed: outOfStock ? null : onAdd,
                       icon: const Icon(Icons.add),
-                      label: Text(outOfStock ? 'Out of stock' : 'Add to order'),
+                      label: Text(
+                        outOfStock
+                            ? _tr('product.out_of_stock')
+                            : _tr('product.add_to_order'),
+                      ),
                     ),
                   ),
                 ],
@@ -1980,13 +2667,13 @@ class _SmallScreenNotice extends StatelessWidget {
                   const Icon(Icons.tablet_mac, size: 56),
                   const SizedBox(height: 16),
                   Text(
-                    'This POS view is optimized for laptops and tablets.',
+                    _tr('small_screen.title'),
                     style: Theme.of(context).textTheme.titleMedium,
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 10),
-                  const Text(
-                    'Use a wider screen to access the full product and checkout layout.',
+                  Text(
+                    _tr('small_screen.subtitle'),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -2017,14 +2704,14 @@ class _SessionLoadingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
+    return Scaffold(
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            CircularProgressIndicator(),
-            SizedBox(height: 12),
-            Text('Loading catalog, customers, and orders...'),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 12),
+            Text(_tr('session.loading_data')),
           ],
         ),
       ),
@@ -2097,7 +2784,7 @@ class _SessionErrorScreenState extends State<_SessionErrorScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    'Could not load POS data',
+                    _tr('session.error_title'),
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 12),
@@ -2114,7 +2801,7 @@ class _SessionErrorScreenState extends State<_SessionErrorScreen> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.refresh),
-                      label: const Text('Retry'),
+                      label: Text(_tr('common.retry')),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -2128,7 +2815,7 @@ class _SessionErrorScreenState extends State<_SessionErrorScreen> {
                               height: 16,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Change API key'),
+                          : Text(_tr('common.change_api_key')),
                     ),
                   ),
                 ],
@@ -2177,15 +2864,15 @@ class Product {
   factory Product.fromJson(Map<String, dynamic> json, {required String baseUrl}) {
     final int? id = _toInt(json['id']);
     if (id == null) {
-      throw const FormatException('Product id is missing.');
+      throw FormatException(_tr('errors.product_id_missing'));
     }
 
     final String name =
-        _toString(json['name']) ?? _toString(json['title']) ?? 'Product $id';
+        _toString(json['name']) ?? _toString(json['title']) ?? '${_tr('fallback.product')} $id';
     final String description = _toString(json['description']) ??
         _toString(json['details']) ??
         _toString(json['summary']) ??
-        'No description';
+        _tr('fallback.no_description');
 
     final double price = _toDouble(json['price']) ?? 0;
     final String barcode = (_toString(json['barcode']) ??
@@ -2231,7 +2918,7 @@ class Customer {
 
   const Customer.walkIn()
       : apiId = null,
-        name = 'Walk-in Customer',
+        name = '',
         phone = null;
 
   final int? apiId;
@@ -2241,6 +2928,9 @@ class Customer {
   bool get isWalkIn => apiId == null;
 
   String get displayLabel {
+    if (isWalkIn) {
+      return _tr('customer.walk_in');
+    }
     if (phone == null || phone!.isEmpty) {
       return name;
     }
@@ -2250,14 +2940,14 @@ class Customer {
   factory Customer.fromJson(Map<String, dynamic> json) {
     final int? id = _toInt(json['id']);
     if (id == null) {
-      throw const FormatException('Customer id is missing.');
+      throw FormatException(_tr('errors.customer_id_missing'));
     }
 
     return Customer(
       apiId: id,
       name: _toString(json['name']) ??
           _toString(json['company']) ??
-          'Customer $id',
+          '${_tr('fallback.customer')} $id',
       phone: _toString(json['phone']),
     );
   }
@@ -2564,7 +3254,7 @@ class Mashroo3ApiClient {
     }
 
     if (customerMap == null) {
-      throw const ApiException('Unexpected create customer response.');
+      throw ApiException(_tr('errors.unexpected_create_customer_response'));
     }
 
     return Customer.fromJson(customerMap);
@@ -2674,7 +3364,12 @@ class Mashroo3ApiClient {
           );
           break;
         default:
-          throw ApiException('Unsupported method: $method');
+          throw ApiException(
+            _tr(
+              'errors.unsupported_method',
+              namedArgs: <String, String>{'method': method},
+            ),
+          );
       }
 
       dynamic decoded;
@@ -2689,7 +3384,12 @@ class Mashroo3ApiClient {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiException(
           _extractErrorMessage(decoded) ??
-              'Request failed with status ${response.statusCode}.',
+              _tr(
+                'errors.request_failed_status',
+                namedArgs: <String, String>{
+                  'status': '${response.statusCode}',
+                },
+              ),
           statusCode: response.statusCode,
         );
       }
@@ -2697,7 +3397,13 @@ class Mashroo3ApiClient {
       if (decoded is Map<String, dynamic> && decoded['ok'] == false) {
         throw ApiException(
           _extractErrorMessage(decoded) ??
-              'API returned ok=false for $method $path.',
+              _tr(
+                'errors.api_returned_ok_false',
+                namedArgs: <String, String>{
+                  'method': method,
+                  'path': path,
+                },
+              ),
           statusCode: response.statusCode,
         );
       }
@@ -2708,7 +3414,15 @@ class Mashroo3ApiClient {
         rethrow;
       }
 
-      throw ApiException('Network error while calling $path: $error');
+      throw ApiException(
+        _tr(
+          'errors.network_error_calling',
+          namedArgs: <String, String>{
+            'path': path,
+            'error': '$error',
+          },
+        ),
+      );
     }
   }
 
