@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:desktop_updater/desktop_updater.dart';
+import 'package:desktop_updater/updater_controller.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
@@ -59,6 +60,7 @@ class _DesktopUpdateGate extends StatefulWidget {
 
 class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
   DesktopUpdaterController? _updaterController;
+  String? _currentDesktopVersion;
   bool _isChecking = true;
   bool _canLoadApp = false;
   String? _downloadError;
@@ -103,6 +105,11 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
     );
     controller.addListener(_onUpdaterChanged);
     _updaterController = controller;
+    try {
+      _currentDesktopVersion = await DesktopUpdater().getCurrentVersion();
+    } catch (_) {
+      _currentDesktopVersion = null;
+    }
 
     try {
       await controller.checkVersion().timeout(const Duration(seconds: 15));
@@ -147,7 +154,7 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
     if (controller == null) return;
 
     try {
-      await controller.restartApp();
+      controller.restartApp();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -212,7 +219,7 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
             ? 1
             : rawProgress;
     final int progressPercent = (clampedProgress * 100).round();
-    final List<ChangeModel> notes = controller.releaseNotes
+    final List<ChangeModel> notes = (controller.releaseNotes ?? const <ChangeModel?>[])
         .whereType<ChangeModel>()
         .toList(growable: false);
     final bool showProgressBar = controller.isDownloading || controller.isDownloaded;
@@ -251,13 +258,13 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
                     ),
                     const SizedBox(height: 10),
                     Text(_tr('updater.required_subtitle')),
-                    if ((controller.currentVersion ?? '').isNotEmpty) ...<Widget>[
+                    if ((_currentDesktopVersion ?? '').isNotEmpty) ...<Widget>[
                       const SizedBox(height: 8),
                       Text(
                         _tr(
                           'updater.current_version',
                           namedArgs: <String, String>{
-                            'version': controller.currentVersion ?? '',
+                            'version': _currentDesktopVersion ?? '',
                           },
                         ),
                       ),
