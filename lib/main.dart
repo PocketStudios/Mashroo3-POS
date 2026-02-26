@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:desktop_updater/desktop_updater.dart';
 import 'package:desktop_updater/updater_controller.dart';
@@ -937,6 +938,7 @@ class _PosAppState extends State<PosApp> {
       apiKey: _apiKey!,
       openingCash: _openingCash!,
       products: _products,
+      orders: _orders,
       customers: _customers,
       selectedCustomer: _selectedCustomer,
       cartItems: _cartItems,
@@ -1203,6 +1205,7 @@ class PosScreen extends StatefulWidget {
     required this.apiKey,
     required this.openingCash,
     required this.products,
+    required this.orders,
     required this.customers,
     required this.selectedCustomer,
     required this.cartItems,
@@ -1221,6 +1224,7 @@ class PosScreen extends StatefulWidget {
   final String apiKey;
   final double openingCash;
   final List<Product> products;
+  final List<PosOrder> orders;
   final List<Customer> customers;
   final Customer? selectedCustomer;
   final List<CartItem> cartItems;
@@ -1257,6 +1261,7 @@ class _PosScreenState extends State<PosScreen> {
 
   bool _isSigningOut = false;
   bool _isRefreshing = false;
+  bool _isOpeningOrders = false;
   bool _isCreatingCustomer = false;
   bool _isCreatingOrder = false;
   bool _allowPartialPayment = false;
@@ -1363,6 +1368,78 @@ class _PosScreenState extends State<PosScreen> {
     });
 
     _showMessage(result);
+    _barcodeFocusNode.requestFocus();
+  }
+
+  Mashroo3ApiClient _createApiClient() {
+    return Mashroo3ApiClient(
+      baseUrl: _apiBaseUrl,
+      apiKey: widget.apiKey,
+    );
+  }
+
+  String _formatOrderDate(DateTime? value) {
+    if (value == null) return '-';
+    return DateFormat.yMd(context.locale.toLanguageTag())
+        .add_jm()
+        .format(value.toLocal());
+  }
+
+  Future<void> _openOrdersHistory() async {
+    if (_isOpeningOrders) {
+      return;
+    }
+
+    setState(() {
+      _isOpeningOrders = true;
+    });
+
+    final int? selectedOrderId = await showDialog<int>(
+      context: context,
+      builder: (BuildContext context) {
+        return _OrdersHistoryDialog(
+          orders: widget.orders.take(10).toList(growable: false),
+          currency: _currency,
+          formatOrderDate: _formatOrderDate,
+        );
+      },
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _isOpeningOrders = false;
+    });
+
+    if (selectedOrderId == null) {
+      _barcodeFocusNode.requestFocus();
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return _OrderDetailsDialog(
+          orderId: selectedOrderId,
+          apiClient: _createApiClient(),
+          currency: _currency,
+          formatOrderDate: _formatOrderDate,
+          onDataChanged: () async {
+            final PosActionResult result = await widget.onRefreshData();
+            if (mounted && !result.success) {
+              _showMessage(result);
+            }
+          },
+        );
+      },
+    );
+
+    if (!mounted) {
+      return;
+    }
+
     _barcodeFocusNode.requestFocus();
   }
 
@@ -1831,6 +1908,17 @@ class _PosScreenState extends State<PosScreen> {
               icon: const Icon(Icons.download_for_offline),
             ),
           IconButton(
+            tooltip: _tr('appbar.orders'),
+            onPressed: _isOpeningOrders ? null : _openOrdersHistory,
+            icon: _isOpeningOrders
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.receipt_long_outlined),
+          ),
+          IconButton(
             tooltip: _tr('appbar.refresh'),
             onPressed: _isRefreshing ? null : _refreshData,
             icon: _isRefreshing
@@ -2281,6 +2369,642 @@ class _PosScreenState extends State<PosScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+class _OrdersHistoryDialog extends StatelessWidget {
+  const _OrdersHistoryDialog({
+    required this.orders,
+    required this.currency,
+    required this.formatOrderDate,
+  });
+
+  final List<PosOrder> orders;
+  final NumberFormat currency;
+  final String Function(DateTime?) formatOrderDate;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<PosOrder> visibleOrders = orders
+        .where((PosOrder order) => order.apiId != null)
+        .take(10)
+        .toList(growable: false);
+
+    return AlertDialog(
+      title: Text(_tr('orders.last_10_title')),
+      content: SizedBox(
+        width: 760,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 480),
+          child: visibleOrders.isEmpty
+              ? Center(
+                  child: Text(_tr('orders.no_orders')),
+                )
+              : ListView.separated(
+                  itemCount: visibleOrders.length,
+                  separatorBuilder: (BuildContext context, int index) {
+                    return const Divider(height: 1);
+                  },
+                  itemBuilder: (BuildContext context, int index) {
+                    final PosOrder order = visibleOrders[index];
+                    final String customerName =
+                        (order.customerName ?? '').trim().isEmpty
+                            ? _tr('customer.walk_in')
+                            : order.customerName!.trim();
+
+                    return ListTile(
+                      onTap: () => Navigator.of(context).pop(order.apiId),
+                      leading: CircleAvatar(
+                        child: Text('${index + 1}'),
+                      ),
+                      title: Text(
+                        _tr(
+                          'orders.order_id',
+                          namedArgs: <String, String>{'id': '${order.apiId}'},
+                        ),
+                      ),
+                      subtitle: Text(
+                        _tr(
+                          'orders.list_subtitle',
+                          namedArgs: <String, String>{
+                            'customer': customerName,
+                            'date': formatOrderDate(order.createdAt),
+                          },
+                        ),
+                      ),
+                      trailing: SizedBox(
+                        width: 200,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: <Widget>[
+                            Text(
+                              _tr(
+                                'orders.total_inline',
+                                namedArgs: <String, String>{
+                                  'amount': currency.format(order.total),
+                                },
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              _tr(
+                                'orders.paid_inline',
+                                namedArgs: <String, String>{
+                                  'amount': currency.format(order.paid),
+                                },
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (!order.isFullyPaid)
+                              Text(
+                                _tr(
+                                  'orders.remaining_inline',
+                                  namedArgs: <String, String>{
+                                    'amount': currency.format(
+                                      order.remainingBalance,
+                                    ),
+                                  },
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.error,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(_tr('common.close')),
+        ),
+      ],
+    );
+  }
+}
+
+class _OrderDetailsDialog extends StatefulWidget {
+  const _OrderDetailsDialog({
+    required this.orderId,
+    required this.apiClient,
+    required this.currency,
+    required this.formatOrderDate,
+    required this.onDataChanged,
+  });
+
+  final int orderId;
+  final Mashroo3ApiClient apiClient;
+  final NumberFormat currency;
+  final String Function(DateTime?) formatOrderDate;
+  final Future<void> Function() onDataChanged;
+
+  @override
+  State<_OrderDetailsDialog> createState() => _OrderDetailsDialogState();
+}
+
+class _OrderDetailsDialogState extends State<_OrderDetailsDialog> {
+  final TextEditingController _refundReasonController = TextEditingController();
+
+  PosOrderDetails? _details;
+  String? _error;
+  bool _isLoading = true;
+  bool _isRefunding = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDetails();
+  }
+
+  @override
+  void dispose() {
+    _refundReasonController.dispose();
+    super.dispose();
+  }
+
+  String _formatError(Object error) {
+    if (error is ApiException) {
+      return error.message;
+    }
+    return _tr(
+      'messages.unexpected_error',
+      namedArgs: <String, String>{'error': '$error'},
+    );
+  }
+
+  Future<void> _loadDetails({bool showSpinner = true}) async {
+    if (showSpinner) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
+
+    try {
+      final PosOrderDetails details =
+          await widget.apiClient.fetchOrderDetails(orderId: widget.orderId);
+
+      if (!mounted) return;
+      setState(() {
+        _details = details;
+        _error = null;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = _formatError(error);
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _showMessage(PosActionResult result) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor: result.success
+            ? Colors.green.shade700
+            : Colors.red.shade700,
+      ),
+    );
+  }
+
+  List<PosRefundRequestItem> _buildRemainingRefundItems(PosOrderDetails details) {
+    final List<PosRefundRequestItem> items = <PosRefundRequestItem>[];
+    for (final PosOrderItem item in details.orderItems) {
+      final int? orderItemId = item.orderItemId;
+      if (orderItemId == null || orderItemId <= 0) continue;
+
+      final double refundableQty = details.refundableQtyFor(item);
+      if (refundableQty <= _qtyEpsilon) continue;
+
+      items.add(
+        PosRefundRequestItem(
+          orderItemId: orderItemId,
+          qty: _roundQty(refundableQty),
+        ),
+      );
+    }
+
+    return items;
+  }
+
+  double _estimateRefundTotal(
+    PosOrderDetails details,
+    List<PosRefundRequestItem> items,
+  ) {
+    double total = 0;
+    for (final PosRefundRequestItem requestItem in items) {
+      final PosOrderItem? orderItem = details.findOrderItem(requestItem.orderItemId);
+      if (orderItem == null) continue;
+      total += requestItem.qty * orderItem.price;
+    }
+    return _roundQty(total, 2);
+  }
+
+  Future<void> _refundRemaining() async {
+    if (_isRefunding) return;
+    final PosOrderDetails? details = _details;
+    if (details == null) return;
+
+    final List<PosRefundRequestItem> items = _buildRemainingRefundItems(details);
+    if (items.isEmpty) {
+      _showMessage(
+        PosActionResult(
+          success: false,
+          message: _tr('messages.no_refundable_items'),
+        ),
+      );
+      return;
+    }
+
+    final String reason = _refundReasonController.text.trim();
+
+    setState(() {
+      _isRefunding = true;
+    });
+
+    try {
+      final PosRefundResult result = await widget.apiClient.refundOrder(
+        orderId: widget.orderId,
+        items: items,
+        reason: reason.isEmpty ? null : reason,
+      );
+
+      if (!mounted) return;
+
+      final String message = result.refundTotal == null
+          ? _tr('messages.refund_processed')
+          : _tr(
+              'messages.refund_processed_total',
+              namedArgs: <String, String>{
+                'amount': widget.currency.format(result.refundTotal!),
+              },
+            );
+      _showMessage(PosActionResult(success: true, message: message));
+
+      await widget.onDataChanged();
+      await _loadDetails(showSpinner: false);
+    } catch (error) {
+      if (!mounted) return;
+      _showMessage(
+        PosActionResult(
+          success: false,
+          message: _formatError(error),
+        ),
+      );
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _isRefunding = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final PosOrderDetails? details = _details;
+    final List<PosRefundRequestItem> remainingRefundItems = details == null
+        ? const <PosRefundRequestItem>[]
+        : _buildRemainingRefundItems(details);
+    final bool canRefund =
+        details != null && remainingRefundItems.isNotEmpty && !_isRefunding;
+    final double estimatedRefund = details == null
+        ? 0
+        : _estimateRefundTotal(details, remainingRefundItems);
+
+    return AlertDialog(
+      title: Text(
+        _tr(
+          'orders.details_title',
+          namedArgs: <String, String>{'id': '${widget.orderId}'},
+        ),
+      ),
+      content: SizedBox(
+        width: 860,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 580),
+          child: _isLoading
+              ? const Center(
+                  child: CircularProgressIndicator(),
+                )
+              : _error != null
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Text(
+                            _error!,
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: () => _loadDetails(),
+                            icon: const Icon(Icons.refresh),
+                            label: Text(_tr('common.retry')),
+                          ),
+                        ],
+                      ),
+                    )
+                  : details == null
+                      ? Center(
+                          child: Text(_tr('orders.no_order_data')),
+                        )
+                      : SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: <Widget>[
+                                  Chip(
+                                    label: Text(
+                                      _tr(
+                                        'orders.customer_inline',
+                                        namedArgs: <String, String>{
+                                          'name':
+                                              details.customer?.name ??
+                                              details.order.customerName ??
+                                              _tr('customer.walk_in'),
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  Chip(
+                                    label: Text(
+                                      _tr(
+                                        'orders.state_inline',
+                                        namedArgs: <String, String>{
+                                          'state': details.order.state ?? '-',
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  Chip(
+                                    label: Text(
+                                      _tr(
+                                        'orders.created_inline',
+                                        namedArgs: <String, String>{
+                                          'date': widget.formatOrderDate(
+                                            details.order.createdAt,
+                                          ),
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                    children: <Widget>[
+                                      _SummaryRow(
+                                        label: _tr('orders.total_label'),
+                                        value: widget.currency.format(
+                                          details.order.total,
+                                        ),
+                                      ),
+                                      _SummaryRow(
+                                        label: _tr('orders.paid_label'),
+                                        value: widget.currency.format(
+                                          details.order.paid,
+                                        ),
+                                      ),
+                                      _SummaryRow(
+                                        label: _tr('orders.remaining_label'),
+                                        value: widget.currency.format(
+                                          details.order.remainingBalance,
+                                        ),
+                                      ),
+                                      if (details.customer?.phone != null &&
+                                          details.customer!.phone!.trim().isNotEmpty)
+                                        _SummaryRow(
+                                          label: _tr('orders.customer_phone_label'),
+                                          value: details.customer!.phone!,
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                _tr('orders.items_section'),
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 8),
+                              if (details.orderItems.isEmpty)
+                                Text(_tr('orders.no_order_items'))
+                              else
+                                ...details.orderItems.map((PosOrderItem item) {
+                                  final double refundedQty =
+                                      details.refundedQtyFor(item.orderItemId);
+                                  final double refundableQty =
+                                      details.refundableQtyFor(item);
+
+                                  return Card(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(10),
+                                      child: Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: <Widget>[
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: <Widget>[
+                                                Text(
+                                                  item.productName ??
+                                                      '${_tr('fallback.product')} ${item.productId}',
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .titleSmall,
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  _tr(
+                                                    'orders.item_qty_price',
+                                                    namedArgs: <String, String>{
+                                                      'qty': _formatQty(
+                                                        item.quantity,
+                                                      ),
+                                                      'unit': item.unitCode,
+                                                      'price': widget.currency
+                                                          .format(item.price),
+                                                    },
+                                                  ),
+                                                ),
+                                                Text(
+                                                  _tr(
+                                                    'orders.item_refunded',
+                                                    namedArgs: <String, String>{
+                                                      'qty': _formatQty(
+                                                        refundedQty,
+                                                      ),
+                                                      'unit': item.unitCode,
+                                                    },
+                                                  ),
+                                                ),
+                                                Text(
+                                                  _tr(
+                                                    'orders.item_refundable',
+                                                    namedArgs: <String, String>{
+                                                      'qty': _formatQty(
+                                                        refundableQty,
+                                                      ),
+                                                      'unit': item.unitCode,
+                                                    },
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            widget.currency
+                                                .format(item.lineTotal),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .titleSmall,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                }),
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: _refundReasonController,
+                                minLines: 1,
+                                maxLines: 3,
+                                decoration: InputDecoration(
+                                  border: const OutlineInputBorder(),
+                                  labelText: _tr('orders.refund_reason_label'),
+                                  hintText: _tr('orders.refund_reason_hint'),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _tr(
+                                  'orders.refund_hint',
+                                  namedArgs: <String, String>{
+                                    'items': '${remainingRefundItems.length}',
+                                    'amount': widget.currency.format(
+                                      estimatedRefund,
+                                    ),
+                                  },
+                                ),
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                              const SizedBox(height: 14),
+                              Text(
+                                _tr('orders.refund_history_title'),
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 8),
+                              if (details.refunds.isEmpty)
+                                Text(_tr('orders.no_refunds'))
+                              else
+                                ...details.refunds.map((PosOrderRefund refund) {
+                                  return Card(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(10),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: <Widget>[
+                                          Text(
+                                            _tr(
+                                              'orders.refund_entry_title',
+                                              namedArgs: <String, String>{
+                                                'id': '${refund.id}',
+                                              },
+                                            ),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .titleSmall,
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            _tr(
+                                              'orders.refund_entry_summary',
+                                              namedArgs: <String, String>{
+                                                'total': widget.currency.format(
+                                                  refund.refundTotal,
+                                                ),
+                                                'paid': widget.currency.format(
+                                                  refund.refundPaid,
+                                                ),
+                                                'date': widget.formatOrderDate(
+                                                  refund.createdAt,
+                                                ),
+                                              },
+                                            ),
+                                          ),
+                                          if ((refund.reason ?? '')
+                                              .trim()
+                                              .isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 4,
+                                              ),
+                                              child: Text(
+                                                _tr(
+                                                  'orders.refund_reason_inline',
+                                                  namedArgs: <String, String>{
+                                                    'reason':
+                                                        refund.reason!.trim(),
+                                                  },
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                }),
+                            ],
+                          ),
+                        ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: _isRefunding ? null : () => Navigator.of(context).pop(),
+          child: Text(_tr('common.close')),
+        ),
+        FilledButton.icon(
+          onPressed: canRefund ? _refundRemaining : null,
+          icon: _isRefunding
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.undo_rounded),
+          label: Text(
+            _isRefunding
+                ? _tr('orders.refunding')
+                : _tr('orders.refund_remaining_button'),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -3003,13 +3727,17 @@ class OrderRequestItem {
 @immutable
 class PosOrderItem {
   const PosOrderItem({
+    required this.orderItemId,
     required this.productId,
+    required this.productName,
     required this.quantity,
     required this.price,
     required this.unitCode,
   });
 
+  final int? orderItemId;
   final int productId;
+  final String? productName;
   final double quantity;
   final double price;
   final String unitCode;
@@ -3017,8 +3745,16 @@ class PosOrderItem {
   double get lineTotal => price * quantity;
 
   factory PosOrderItem.fromJson(Map<String, dynamic> json) {
+    final Map<String, dynamic>? productNode = _toMap(json['product']);
+    final int productId = _toInt(json['product_id']) ??
+        _toInt(productNode?['id']) ??
+        _toInt(json['id']) ??
+        0;
+
     return PosOrderItem(
-      productId: _toInt(json['product_id'] ?? json['id']) ?? 0,
+      orderItemId: _toInt(json['id']),
+      productId: productId,
+      productName: _toString(json['product_name']) ?? _toString(productNode?['name']),
       quantity: _toDouble(json['qty'] ?? json['quantity']) ?? 0,
       price: _toDouble(json['price']) ?? 0,
       unitCode: _toString(json['unit_code']) ?? 'pcs',
@@ -3027,7 +3763,9 @@ class PosOrderItem {
 
   factory PosOrderItem.fromRequestItem(OrderRequestItem item, {double? price}) {
     return PosOrderItem(
+      orderItemId: null,
       productId: item.productId,
+      productName: null,
       quantity: item.quantity,
       price: price ?? 0,
       unitCode: item.unitCode,
@@ -3044,6 +3782,11 @@ class PosOrder {
     required this.total,
     required this.paid,
     required this.items,
+    this.state,
+    this.orderDescription,
+    this.subtotal = 0,
+    this.discount = 0,
+    this.tax = 0,
   });
 
   final int? apiId;
@@ -3052,6 +3795,11 @@ class PosOrder {
   final double total;
   final double paid;
   final List<PosOrderItem> items;
+  final String? state;
+  final String? orderDescription;
+  final double subtotal;
+  final double discount;
+  final double tax;
 
   double get remainingBalance {
     final double remaining = total - paid;
@@ -3085,6 +3833,9 @@ class PosOrder {
           0,
           (double sum, PosOrderItem item) => sum + item.lineTotal,
         );
+    final double subtotal = _toDouble(json['subtotal']) ?? total;
+    final double discount = _toDouble(json['discount']) ?? 0;
+    final double tax = _toDouble(json['tax']) ?? 0;
     final double paid = _toDouble(json['paid'] ?? json['paid_amount']) ?? total;
 
     String? customerName;
@@ -3104,6 +3855,11 @@ class PosOrder {
       total: total,
       paid: paid,
       items: parsedItems,
+      state: _toString(json['state']),
+      orderDescription: _toString(json['order_description']),
+      subtotal: subtotal,
+      discount: discount,
+      tax: tax,
     );
   }
 
@@ -3122,7 +3878,242 @@ class PosOrder {
       items: items
           .map((OrderRequestItem item) => PosOrderItem.fromRequestItem(item))
           .toList(growable: false),
+      state: 'created',
+      orderDescription: null,
+      subtotal: total,
+      discount: 0,
+      tax: 0,
     );
+  }
+}
+
+@immutable
+class PosOrderRefundItem {
+  const PosOrderRefundItem({
+    required this.id,
+    required this.orderItemId,
+    required this.productId,
+    required this.qty,
+    required this.unitCode,
+    required this.unitPrice,
+    required this.createdAt,
+  });
+
+  final int? id;
+  final int? orderItemId;
+  final int? productId;
+  final double qty;
+  final String unitCode;
+  final double unitPrice;
+  final DateTime? createdAt;
+
+  factory PosOrderRefundItem.fromJson(Map<String, dynamic> json) {
+    return PosOrderRefundItem(
+      id: _toInt(json['id']),
+      orderItemId: _toInt(json['order_item_id']),
+      productId: _toInt(json['product_id']),
+      qty: _toDouble(json['qty']) ?? 0,
+      unitCode: _toString(json['unit_code']) ?? 'pcs',
+      unitPrice: _toDouble(json['unit_price']) ?? 0,
+      createdAt: _toDateTime(json['created_at']),
+    );
+  }
+}
+
+@immutable
+class PosOrderRefund {
+  const PosOrderRefund({
+    required this.id,
+    required this.reason,
+    required this.refundTotal,
+    required this.refundPaid,
+    required this.createdAt,
+    required this.items,
+  });
+
+  final int id;
+  final String? reason;
+  final double refundTotal;
+  final double refundPaid;
+  final DateTime? createdAt;
+  final List<PosOrderRefundItem> items;
+
+  factory PosOrderRefund.fromJson(Map<String, dynamic> json) {
+    final dynamic rawItems = json['order_refund_items'] ?? json['items'];
+    final List<PosOrderRefundItem> parsedItems = <PosOrderRefundItem>[];
+    if (rawItems is List) {
+      for (final dynamic item in rawItems) {
+        final Map<String, dynamic>? map = _toMap(item);
+        if (map == null) continue;
+        parsedItems.add(PosOrderRefundItem.fromJson(map));
+      }
+    }
+
+    return PosOrderRefund(
+      id: _toInt(json['id']) ?? 0,
+      reason: _toString(json['reason']),
+      refundTotal: _toDouble(json['refund_total']) ?? 0,
+      refundPaid: _toDouble(json['refund_paid']) ?? 0,
+      createdAt: _toDateTime(json['created_at']),
+      items: parsedItems,
+    );
+  }
+}
+
+@immutable
+class PosRefundRequestItem {
+  const PosRefundRequestItem({
+    required this.orderItemId,
+    required this.qty,
+  });
+
+  final int orderItemId;
+  final double qty;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'order_item_id': orderItemId,
+      'qty': _roundQty(qty),
+    };
+  }
+}
+
+@immutable
+class PosRefundResult {
+  const PosRefundResult({
+    required this.orderId,
+    required this.refundId,
+    required this.refundTotal,
+  });
+
+  final int? orderId;
+  final int? refundId;
+  final double? refundTotal;
+
+  factory PosRefundResult.fromJson(Map<String, dynamic> json) {
+    final Map<String, dynamic>? refundNode = _toMap(json['refund']);
+
+    return PosRefundResult(
+      orderId: _toInt(json['order_id']),
+      refundId: _toInt(refundNode?['refund_id'] ?? refundNode?['id']),
+      refundTotal: _toDouble(
+        refundNode?['refund_total'] ?? refundNode?['total'],
+      ),
+    );
+  }
+}
+
+@immutable
+class PosOrderDetails {
+  const PosOrderDetails({
+    required this.order,
+    required this.customer,
+    required this.orderItems,
+    required this.refunds,
+    required this.refundedQtyByOrderItem,
+  });
+
+  final PosOrder order;
+  final Customer? customer;
+  final List<PosOrderItem> orderItems;
+  final List<PosOrderRefund> refunds;
+  final Map<int, double> refundedQtyByOrderItem;
+
+  factory PosOrderDetails.fromJson(Map<String, dynamic> json) {
+    final Map<String, dynamic> orderMap = _toMap(json['order']) ?? json;
+    final Map<String, dynamic>? customerMap = _toMap(json['customer']);
+
+    final dynamic rawOrderItems =
+        json['order_items'] ?? orderMap['order_items'] ?? const <dynamic>[];
+    final List<PosOrderItem> parsedItems = <PosOrderItem>[];
+    if (rawOrderItems is List) {
+      for (final dynamic item in rawOrderItems) {
+        final Map<String, dynamic>? map = _toMap(item);
+        if (map == null) continue;
+        parsedItems.add(PosOrderItem.fromJson(map));
+      }
+    }
+
+    final Map<String, dynamic> mergedOrder = <String, dynamic>{...orderMap};
+    if (customerMap != null) {
+      mergedOrder['customer'] = customerMap;
+      mergedOrder.putIfAbsent('customer_name', () => customerMap['name']);
+      if (mergedOrder['customer_id'] == null) {
+        mergedOrder['customer_id'] = customerMap['id'];
+      }
+    }
+    if (parsedItems.isNotEmpty && mergedOrder['order_items'] == null) {
+      mergedOrder['order_items'] = rawOrderItems;
+    }
+
+    final List<dynamic>? fallbackItems = rawOrderItems is List
+        ? List<dynamic>.from(rawOrderItems)
+        : null;
+    final PosOrder order = PosOrder.fromJson(
+      mergedOrder,
+      fallbackItems: fallbackItems,
+    );
+
+    Customer? customer;
+    if (customerMap != null) {
+      customer = Customer(
+        apiId: _toInt(customerMap['id']),
+        name: _toString(customerMap['name']) ??
+            order.customerName ??
+            _tr('customer.walk_in'),
+        phone: _toString(customerMap['phone']),
+      );
+    }
+
+    final dynamic rawRefunds = json['refunds'];
+    final List<PosOrderRefund> refunds = <PosOrderRefund>[];
+    if (rawRefunds is List) {
+      for (final dynamic refund in rawRefunds) {
+        final Map<String, dynamic>? map = _toMap(refund);
+        if (map == null) continue;
+        refunds.add(PosOrderRefund.fromJson(map));
+      }
+    }
+
+    final Map<int, double> refundedQtyByOrderItem = <int, double>{};
+    final dynamic rawRefundMap = json['refunded_qty_by_order_item'];
+    if (rawRefundMap is Map) {
+      for (final MapEntry<dynamic, dynamic> entry in rawRefundMap.entries) {
+        final int? key = _toInt(entry.key);
+        final double? value = _toDouble(entry.value);
+        if (key == null || value == null) continue;
+        refundedQtyByOrderItem[key] = value;
+      }
+    }
+
+    return PosOrderDetails(
+      order: order,
+      customer: customer,
+      orderItems: parsedItems,
+      refunds: refunds,
+      refundedQtyByOrderItem: refundedQtyByOrderItem,
+    );
+  }
+
+  PosOrderItem? findOrderItem(int orderItemId) {
+    for (final PosOrderItem item in orderItems) {
+      if (item.orderItemId == orderItemId) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  double refundedQtyFor(int? orderItemId) {
+    if (orderItemId == null) return 0;
+    return refundedQtyByOrderItem[orderItemId] ?? 0;
+  }
+
+  double refundableQtyFor(PosOrderItem item) {
+    if (item.orderItemId == null) return 0;
+    final double remaining = item.quantity - refundedQtyFor(item.orderItemId);
+    if (remaining <= 0) return 0;
+    return _roundQty(remaining);
   }
 }
 
@@ -3282,6 +4273,48 @@ class Mashroo3ApiClient {
     }
 
     return orders;
+  }
+
+  Future<PosOrderDetails> fetchOrderDetails({required int orderId}) async {
+    final dynamic response = await _request('GET', '/api/orders/$orderId');
+    final dynamic dataNode = _extractDataNode(response);
+    final Map<String, dynamic>? map = _toMap(dataNode);
+    if (map == null) {
+      throw ApiException(_tr('errors.unexpected_order_details_response'));
+    }
+    return PosOrderDetails.fromJson(map);
+  }
+
+  Future<PosRefundResult> refundOrder({
+    required int orderId,
+    required List<PosRefundRequestItem> items,
+    String? reason,
+  }) async {
+    if (items.isEmpty) {
+      throw ApiException(_tr('errors.refund_items_required'));
+    }
+
+    final Map<String, dynamic> payload = <String, dynamic>{
+      'items': items
+          .map((PosRefundRequestItem item) => item.toJson())
+          .toList(growable: false),
+    };
+    if (reason != null && reason.trim().isNotEmpty) {
+      payload['reason'] = reason.trim();
+    }
+
+    final dynamic response =
+        await _request('POST', '/api/orders/$orderId/refund', body: payload);
+    final dynamic dataNode = _extractDataNode(response);
+    final Map<String, dynamic>? map = _toMap(dataNode);
+    if (map == null) {
+      return const PosRefundResult(
+        orderId: null,
+        refundId: null,
+        refundTotal: null,
+      );
+    }
+    return PosRefundResult.fromJson(map);
   }
 
   Future<PosOrder?> createOrder({
@@ -3535,6 +4568,16 @@ class Mashroo3ApiClient {
 
     return null;
   }
+}
+
+Map<String, dynamic>? _toMap(dynamic value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return Map<String, dynamic>.from(value);
+  }
+  return null;
 }
 
 int? _toInt(dynamic value) {
