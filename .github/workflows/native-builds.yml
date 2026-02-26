@@ -3,8 +3,8 @@ name: Native Multi-Platform Release
 on:
   push:
     tags:
-      - 'v*' # Only runs when you push a tag like v1.0, v2.1.4, etc.
-  workflow_dispatch: # Still allows manual runs if needed
+      - 'v*' # Runs when you push a tag like v2.1.0
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,41 +14,70 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # --- ANDROID (Normal Only) ---
           - platform: android
             os: ubuntu-latest
-            output: app-release.apk
+            artifacts: build/app/outputs/flutter-apk/app-release.apk
             command: flutter build apk --release
-            path: build/app/outputs/flutter-apk/app-release.apk
-          - platform: linux
-            os: ubuntu-latest
-            output: linux-release.tar.gz
-            command: |
-              sudo apt-get update
-              sudo apt-get install -y ninja-build libgtk-3-dev
-              flutter build linux --release
-              tar -czf linux-release.tar.gz -C build/linux/x64/release/bundle .
-            path: linux-release.tar.gz
-          - platform: windows
-            os: windows-latest
-            output: windows-release.zip
-            command: |
-              flutter build windows --release
-              Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows-release.zip
-            path: windows-release.zip
+            
+          # --- IOS (Normal Only) ---
           - platform: ios
             os: macos-latest
-            output: ios-build.zip
+            artifacts: ios-build.zip
             command: |
               flutter build ios --release --no-codesign
               zip -r ios-build.zip build/ios/iphoneos
-            path: ios-build.zip
+              
+          # --- LINUX (Both) ---
+          - platform: linux
+            os: ubuntu-latest
+            artifacts: |
+              linux-full-release.tar.gz
+              linux-updater-files.tar.gz
+            command: |
+              sudo apt-get update
+              sudo apt-get install -y ninja-build libgtk-3-dev
+              # 1. Normal Build
+              flutter build linux --release
+              tar -czf linux-full-release.tar.gz -C build/linux/x64/release/bundle .
+              # 2. Desktop Updater Build
+              dart run desktop_updater:release linux
+              dart run desktop_updater:archive linux
+              tar -czf linux-updater-files.tar.gz -C dist .
+
+          # --- WINDOWS (Both) ---
+          - platform: windows
+            os: windows-latest
+            artifacts: |
+              windows-full-release.zip
+              windows-updater-files.zip
+            command: |
+              # 1. Normal Build
+              flutter build windows --release
+              Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows-full-release.zip
+              # 2. Desktop Updater Build
+              dart run desktop_updater:release windows
+              dart run desktop_updater:archive windows
+              Compress-Archive -Path dist/* -DestinationPath windows-updater-files.zip
+
+          # --- MACOS (Both) ---
           - platform: macos
             os: macos-latest
-            output: macos-release.zip
+            artifacts: |
+              macos-full-release.zip
+              macos-updater-files.zip
             command: |
+              # 1. Normal Build
               flutter build macos --release
-              zip -r macos-release.zip build/macos/Build/Products/Release
-            path: macos-release.zip
+              cd build/macos/Build/Products/Release
+              zip -r ../../../../../macos-full-release.zip mashroo3.app
+              cd ../../../../../
+              # 2. Desktop Updater Build
+              dart run desktop_updater:release macos
+              dart run desktop_updater:archive macos
+              cd dist
+              zip -r ../macos-updater-files.zip *
+              cd ..
 
     steps:
       - name: Checkout code
@@ -70,13 +99,13 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Build Platform
+      - name: Build and Package (Normal & Updater)
         run: ${{ matrix.command }}
 
-      - name: Upload to Release
+      - name: Upload all artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: ${{ matrix.path }}
+          files: ${{ matrix.artifacts }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
