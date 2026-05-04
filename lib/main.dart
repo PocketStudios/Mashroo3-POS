@@ -7,12 +7,17 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import 'package:pwa_install/pwa_install.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'remote_control/remote_control_common.dart';
+import 'remote_control/remote_control_launcher.dart';
 
 const String _apiKeyStorageKey = 'pos_api_key';
 const String _displayCurrencyStorageKey = 'pos_display_currency';
 const String _dailyExchangeRateStorageKey = 'pos_daily_exchange_rate';
+const String _remoteControlAssetPath = 'assets/mashroo3.exe';
 const String _apiBaseUrl = 'https://mashroo3.net';
 const String _desktopAppArchiveUrl = 'https://mashroo3.net/app-archive.json';
 const double _defaultLbpPerUsdRate = 89500;
@@ -1034,7 +1039,15 @@ class ApiKeyScreen extends StatefulWidget {
 
 class _ApiKeyScreenState extends State<ApiKeyScreen> {
   final TextEditingController _apiKeyController = TextEditingController();
+  late final RemoteControlLauncher _remoteControlLauncher;
   bool _isSubmitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _remoteControlLauncher =
+        createRemoteControlLauncher(assetPath: _remoteControlAssetPath);
+  }
 
   @override
   void dispose() {
@@ -1064,6 +1077,18 @@ class _ApiKeyScreenState extends State<ApiKeyScreen> {
     setState(() {
       _isSubmitting = false;
     });
+  }
+
+  Future<void> _openRemoteControlDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return _RemoteControlDialog(
+          launcher: _remoteControlLauncher,
+          identifier: 'pos-terminal',
+        );
+      },
+    );
   }
 
   @override
@@ -1111,6 +1136,15 @@ class _ApiKeyScreenState extends State<ApiKeyScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : Text(_tr('common.continue')),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _openRemoteControlDialog,
+                      icon: const Icon(Icons.support_agent_outlined),
+                      label: Text(_tr('remote_control.title')),
                     ),
                   ),
                 ],
@@ -1335,6 +1369,7 @@ class _PosScreenState extends State<PosScreen> {
   final Map<int, TextEditingController> _qtyControllers =
       <int, TextEditingController>{};
   final Map<int, FocusNode> _qtyFocusNodes = <int, FocusNode>{};
+  late final RemoteControlLauncher _remoteControlLauncher;
 
   bool _isSigningOut = false;
   bool _isRefreshing = false;
@@ -1343,6 +1378,13 @@ class _PosScreenState extends State<PosScreen> {
   bool _isCreatingOrder = false;
   bool _allowPartialPayment = false;
   String _searchTerm = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _remoteControlLauncher =
+        createRemoteControlLauncher(assetPath: _remoteControlAssetPath);
+  }
 
   bool get _isDisplayLbp => widget.displayCurrency == PosDisplayCurrency.lbp;
 
@@ -1425,6 +1467,34 @@ class _PosScreenState extends State<PosScreen> {
       return '****';
     }
     return '${key.substring(0, 4)}****';
+  }
+
+  String _buildRemoteControlIdentifier() {
+    final Customer? selectedCustomer = widget.selectedCustomer;
+    final String? selectedCustomerLabel =
+        selectedCustomer != null && !selectedCustomer.isWalkIn
+            ? selectedCustomer.displayLabel
+            : null;
+
+    return buildRemoteControlIdentifier(
+      selectedCustomerDisplayLabel: selectedCustomerLabel,
+      selectedCustomerApiId: selectedCustomer?.apiId,
+      maskedApiKey: _maskApiKey(widget.apiKey),
+    );
+  }
+
+  Future<void> _openRemoteControlDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return _RemoteControlDialog(
+          launcher: _remoteControlLauncher,
+          identifier: _buildRemoteControlIdentifier(),
+        );
+      },
+    );
+    if (!mounted) return;
+    _barcodeFocusNode.requestFocus();
   }
 
   void _promptPwaInstall() {
@@ -2068,6 +2138,11 @@ class _PosScreenState extends State<PosScreen> {
             tooltip: _tr('currency.settings_title'),
             onPressed: _openCurrencySettingsDialog,
             icon: const Icon(Icons.currency_exchange),
+          ),
+          IconButton(
+            tooltip: _tr('remote_control.open_tooltip'),
+            onPressed: _openRemoteControlDialog,
+            icon: const Icon(Icons.support_agent_outlined),
           ),
           if (kIsWeb)
             IconButton(
@@ -2737,6 +2812,138 @@ class _CurrencySettingsDialogState extends State<_CurrencySettingsDialog> {
         FilledButton(
           onPressed: _save,
           child: Text(_tr('common.continue')),
+        ),
+      ],
+    );
+  }
+}
+
+class _RemoteControlDialog extends StatefulWidget {
+  const _RemoteControlDialog({
+    required this.launcher,
+    required this.identifier,
+  });
+
+  final RemoteControlLauncher launcher;
+  final String identifier;
+
+  @override
+  State<_RemoteControlDialog> createState() => _RemoteControlDialogState();
+}
+
+class _RemoteControlDialogState extends State<_RemoteControlDialog> {
+  bool _isLaunching = false;
+  RemoteControlLaunchResult? _result;
+
+  Future<void> _startRemoteControl() async {
+    if (_isLaunching) return;
+    setState(() {
+      _isLaunching = true;
+      _result = null;
+    });
+
+    final RemoteControlLaunchResult result = await widget.launcher
+        .launchOneTimeConnect(identifier: widget.identifier);
+    if (!mounted) return;
+
+    setState(() {
+      _isLaunching = false;
+      _result = result;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final RemoteControlLaunchResult? result = _result;
+    final bool isSupported = widget.launcher.isSupported;
+
+    String? statusText;
+    Color? statusColor;
+    if (result != null) {
+      if (result.success) {
+        statusText = result.startedWithFallback
+            ? _tr('remote_control.status_success_fallback')
+            : _tr('remote_control.status_success');
+        statusColor = Colors.green.shade700;
+      } else {
+        statusText = _tr(
+          'remote_control.status_failed',
+          namedArgs: <String, String>{'message': result.message},
+        );
+        statusColor = Theme.of(context).colorScheme.error;
+      }
+    }
+
+    return AlertDialog(
+      title: Text(_tr('remote_control.title')),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(_tr('remote_control.description')),
+            const SizedBox(height: 12),
+            Text(
+              _tr('remote_control.identifier_label'),
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+            const SizedBox(height: 4),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              child: SelectableText(
+                widget.identifier,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(_tr('remote_control.confirmation_text')),
+            if (!isSupported) ...<Widget>[
+              const SizedBox(height: 10),
+              Text(
+                _tr(
+                  'remote_control.unsupported_platform',
+                  namedArgs: <String, String>{
+                    'reason': widget.launcher.unsupportedReason,
+                  },
+                ),
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+            if (statusText != null) ...<Widget>[
+              const SizedBox(height: 10),
+              Text(statusText, style: TextStyle(color: statusColor)),
+            ],
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: _isLaunching ? null : () => Navigator.of(context).pop(),
+          child: Text(_tr('common.close')),
+        ),
+        FilledButton.icon(
+          onPressed:
+              !isSupported || _isLaunching ? null : _startRemoteControl,
+          icon: _isLaunching
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.power_settings_new),
+          label: Text(
+            _isLaunching
+                ? _tr('remote_control.starting')
+                : _tr('remote_control.start_button'),
+          ),
         ),
       ],
     );

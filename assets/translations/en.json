@@ -211,5 +211,18 @@
     "exchange_rate_hint": "e.g. 89500",
     "exchange_rate_helper": "Orders stay in USD. UI values in LBP use this rate.",
     "exchange_rate_invalid": "Enter a valid exchange rate greater than zero."
+  },
+  "remote_control": {
+    "open_tooltip": "Mashroo3 Remote Control",
+    "title": "Mashroo3 Remote Control",
+    "description": "Start a one-time remote control session for support.",
+    "identifier_label": "Operator identifier (name/description):",
+    "confirmation_text": "This will launch the local support executable once using --connect.",
+    "start_button": "Start One-Time Remote Control",
+    "starting": "Starting...",
+    "status_success": "Mashroo3 Remote Control started.",
+    "status_success_fallback": "Mashroo3 Remote Control started in fallback connect mode.",
+    "status_failed": "Could not start Mashroo3 Remote Control: {message}",
+    "unsupported_platform": "Windows desktop only. {reason}"
   }
 }

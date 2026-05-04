@@ -211,5 +211,18 @@
     "exchange_rate_hint": "مثال: 89500",
     "exchange_rate_helper": "الطلبات تبقى بالدولار. قيم الواجهة بالليرة تعتمد هذا السعر.",
     "exchange_rate_invalid": "أدخل سعر صرف صحيحًا أكبر من صفر."
+  },
+  "remote_control": {
+    "open_tooltip": "Mashroo3 Remote Control",
+    "title": "Mashroo3 Remote Control",
+    "description": "ابدأ جلسة تحكم عن بعد لمرة واحدة لأغراض الدعم.",
+    "identifier_label": "معرّف المشغل (الاسم/الوصف):",
+    "confirmation_text": "سيتم تشغيل أداة الدعم المحلية مرة واحدة باستخدام --connect.",
+    "start_button": "بدء تحكم عن بعد لمرة واحدة",
+    "starting": "جارٍ البدء...",
+    "status_success": "تم تشغيل Mashroo3 Remote Control بنجاح.",
+    "status_success_fallback": "تم تشغيل Mashroo3 Remote Control بوضع الاتصال البديل.",
+    "status_failed": "تعذر تشغيل Mashroo3 Remote Control: {message}",
+    "unsupported_platform": "الميزة متاحة فقط على سطح مكتب Windows. {reason}"
   }
 }
