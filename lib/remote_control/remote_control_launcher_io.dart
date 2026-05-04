@@ -39,32 +39,20 @@ class _IoRemoteControlLauncher implements RemoteControlLauncher {
       );
     }
 
-    final _LaunchAttempt primary = await _startWithArgs(
+    final _LaunchAttempt launch = await _startWithArgs(
       executablePath,
-      buildRemoteControlPrimaryArgs(identifier),
+      buildRemoteControlConnectArgs(),
     );
-    if (primary.success) {
+    if (launch.success) {
       return RemoteControlLaunchResult(
         success: true,
         message: 'Mashroo3 Remote Control started.',
       );
     }
 
-    final _LaunchAttempt fallback = await _startWithArgs(
-      executablePath,
-      buildRemoteControlFallbackArgs(),
-    );
-    if (fallback.success) {
-      return RemoteControlLaunchResult(
-        success: true,
-        message: 'Mashroo3 Remote Control started using fallback connect mode.',
-        startedWithFallback: true,
-      );
-    }
-
     return RemoteControlLaunchResult(
       success: false,
-      message: fallback.errorMessage ?? primary.errorMessage ?? 'Launch failed.',
+      message: launch.errorMessage ?? 'Launch failed.',
     );
   }
 

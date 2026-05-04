@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'remote_control/remote_control_common.dart';
 import 'remote_control/remote_control_launcher.dart';
+import 'updater_restart/updater_restart.dart';
 
 const String _apiKeyStorageKey = 'pos_api_key';
 const String _displayCurrencyStorageKey = 'pos_display_currency';
@@ -182,6 +183,14 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
     if (controller == null) return;
 
     try {
+      final String? prepareError = await prepareDesktopUpdaterRestart();
+      if (prepareError != null && prepareError.trim().isNotEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _downloadError = prepareError.trim();
+        });
+        return;
+      }
       controller.restartApp();
     } catch (error) {
       if (!mounted) return;
@@ -2861,9 +2870,7 @@ class _RemoteControlDialogState extends State<_RemoteControlDialog> {
     Color? statusColor;
     if (result != null) {
       if (result.success) {
-        statusText = result.startedWithFallback
-            ? _tr('remote_control.status_success_fallback')
-            : _tr('remote_control.status_success');
+        statusText = _tr('remote_control.status_success');
         statusColor = Colors.green.shade700;
       } else {
         statusText = _tr(

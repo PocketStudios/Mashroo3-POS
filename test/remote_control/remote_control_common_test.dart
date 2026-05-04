@@ -41,23 +41,9 @@ void main() {
   });
 
   group('remote control arguments', () {
-    test('builds primary args with name and description', () {
-      final List<String> args = buildRemoteControlPrimaryArgs('john@example.com');
-      expect(
-        args,
-        const <String>[
-          '--connect',
-          '--name',
-          'john@example.com',
-          '--description',
-          'john@example.com',
-        ],
-      );
-    });
-
-    test('builds fallback args with connect only', () {
-      final List<String> args = buildRemoteControlFallbackArgs();
-      expect(args, const <String>['--connect']);
+    test('builds connect args without dashes', () {
+      final List<String> args = buildRemoteControlConnectArgs();
+      expect(args, const <String>['connect']);
     });
   });
 }

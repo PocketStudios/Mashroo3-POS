@@ -20,18 +20,8 @@ String buildRemoteControlIdentifier({
   return 'pos-terminal';
 }
 
-List<String> buildRemoteControlPrimaryArgs(String identifier) {
-  return <String>[
-    '--connect',
-    '--name',
-    identifier,
-    '--description',
-    identifier,
-  ];
-}
-
-List<String> buildRemoteControlFallbackArgs() {
-  return const <String>['--connect'];
+List<String> buildRemoteControlConnectArgs() {
+  return const <String>['connect'];
 }
 
 String? _normalizeIdentifier(String? value) {
