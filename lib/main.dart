@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:math' as math;
 
 import 'package:desktop_updater/desktop_updater.dart';
 import 'package:desktop_updater/updater_controller.dart';
@@ -8,13 +7,15 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
 import 'package:pwa_install/pwa_install.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String _apiKeyStorageKey = 'pos_api_key';
+const String _displayCurrencyStorageKey = 'pos_display_currency';
+const String _dailyExchangeRateStorageKey = 'pos_daily_exchange_rate';
 const String _apiBaseUrl = 'https://mashroo3.net';
 const String _desktopAppArchiveUrl = 'https://mashroo3.net/app-archive.json';
+const double _defaultLbpPerUsdRate = 89500;
 const double _qtyEpsilon = 1e-6;
 
 double _roundQty(double value, [int decimals = 3]) {
@@ -29,6 +30,27 @@ String _formatQty(double value, [int decimals = 3]) {
 
 String _tr(String key, {Map<String, String>? namedArgs}) {
   return key.tr(namedArgs: namedArgs);
+}
+
+int _variantCartId(int productId, int variantId) {
+  return (productId * 1000003) ^ variantId;
+}
+
+enum PosDisplayCurrency { usd, lbp }
+
+String _displayCurrencyCode(PosDisplayCurrency value) {
+  switch (value) {
+    case PosDisplayCurrency.lbp:
+      return 'LBP';
+    case PosDisplayCurrency.usd:
+      return 'USD';
+  }
+}
+
+PosDisplayCurrency _displayCurrencyFromCode(String? value) {
+  final String normalized = (value ?? '').trim().toUpperCase();
+  if (normalized == 'LBP') return PosDisplayCurrency.lbp;
+  return PosDisplayCurrency.usd;
 }
 
 Future<void> main() async {
@@ -382,6 +404,8 @@ class _PosAppState extends State<PosApp> {
   Customer? _selectedCustomer;
   String? _apiKey;
   double? _openingCash;
+  PosDisplayCurrency _displayCurrency = PosDisplayCurrency.usd;
+  double _dailyExchangeRate = _defaultLbpPerUsdRate;
   bool _isLoading = true;
   bool _isSessionLoading = false;
   String? _sessionError;
@@ -390,18 +414,64 @@ class _PosAppState extends State<PosApp> {
   void initState() {
     super.initState();
     _selectedCustomer = _customers.first;
-    _loadApiKey();
+    _loadStoredSession();
   }
 
-  Future<void> _loadApiKey() async {
+  Future<void> _loadStoredSession() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     if (!mounted) {
       return;
     }
 
+    final String? storedCurrency = prefs.getString(_displayCurrencyStorageKey);
+    final double? storedRate = prefs.getDouble(_dailyExchangeRateStorageKey) ??
+        _toDouble(prefs.getString(_dailyExchangeRateStorageKey));
+    final double normalizedRate =
+        storedRate != null && storedRate > _qtyEpsilon
+            ? storedRate
+            : _defaultLbpPerUsdRate;
+
     setState(() {
       _apiKey = prefs.getString(_apiKeyStorageKey);
+      _displayCurrency = _displayCurrencyFromCode(storedCurrency);
+      _dailyExchangeRate = normalizedRate;
       _isLoading = false;
+    });
+  }
+
+  String _formatAmountForUi(double usdAmount) {
+    final bool isLbp = _displayCurrency == PosDisplayCurrency.lbp;
+    final int decimals = isLbp ? 0 : 2;
+    final double converted =
+        isLbp ? usdAmount * _dailyExchangeRate : usdAmount;
+    final NumberFormat formatter = NumberFormat.currency(
+      locale: context.locale.toLanguageTag(),
+      name: isLbp ? 'LBP' : 'USD',
+      symbol: isLbp ? 'LBP ' : '\$',
+      decimalDigits: decimals,
+    );
+    return formatter.format(_roundQty(converted, decimals));
+  }
+
+  Future<void> _updateCurrencySettings(
+    PosDisplayCurrency displayCurrency,
+    double dailyExchangeRate,
+  ) async {
+    final double normalizedRate =
+        dailyExchangeRate > _qtyEpsilon
+            ? dailyExchangeRate
+            : _defaultLbpPerUsdRate;
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _displayCurrencyStorageKey,
+      _displayCurrencyCode(displayCurrency),
+    );
+    await prefs.setDouble(_dailyExchangeRateStorageKey, normalizedRate);
+
+    if (!mounted) return;
+    setState(() {
+      _displayCurrency = displayCurrency;
+      _dailyExchangeRate = normalizedRate;
     });
   }
 
@@ -826,12 +896,6 @@ class _PosAppState extends State<PosApp> {
       final PosOrder orderForFeedback = createdOrder ?? fallbackOrder;
       final double remainingBalance =
           _roundQty(orderForFeedback.remainingBalance, 2);
-      final NumberFormat currency = NumberFormat.currency(
-        locale: context.locale.toLanguageTag(),
-        name: 'USD',
-        symbol: '\$',
-        decimalDigits: 2,
-      );
 
       if (orderId != null && remainingBalance > _qtyEpsilon) {
         return PosActionResult(
@@ -840,8 +904,8 @@ class _PosAppState extends State<PosApp> {
             'messages.order_created_with_remaining',
             namedArgs: <String, String>{
               'order_id': '$orderId',
-              'paid': currency.format(orderForFeedback.paid),
-              'remaining': currency.format(remainingBalance),
+              'paid': _formatAmountForUi(orderForFeedback.paid),
+              'remaining': _formatAmountForUi(remainingBalance),
             },
           ),
         );
@@ -944,6 +1008,8 @@ class _PosAppState extends State<PosApp> {
       cartItems: _cartItems,
       cartTotal: _cartTotal,
       todaySales: _todaySales,
+      displayCurrency: _displayCurrency,
+      dailyExchangeRate: _dailyExchangeRate,
       onLogout: _logout,
       onRefreshData: _refreshPosData,
       onAddProduct: _addProductToCart,
@@ -952,6 +1018,7 @@ class _PosAppState extends State<PosApp> {
       onCustomerSelected: _selectCustomer,
       onCreateCustomer: _createCustomer,
       onCreateOrder: _createOrder,
+      onUpdateCurrencySettings: _updateCurrencySettings,
     );
   }
 }
@@ -1211,6 +1278,8 @@ class PosScreen extends StatefulWidget {
     required this.cartItems,
     required this.cartTotal,
     required this.todaySales,
+    required this.displayCurrency,
+    required this.dailyExchangeRate,
     required this.onLogout,
     required this.onRefreshData,
     required this.onAddProduct,
@@ -1219,6 +1288,7 @@ class PosScreen extends StatefulWidget {
     required this.onCustomerSelected,
     required this.onCreateCustomer,
     required this.onCreateOrder,
+    required this.onUpdateCurrencySettings,
   });
 
   final String apiKey;
@@ -1230,6 +1300,8 @@ class PosScreen extends StatefulWidget {
   final List<CartItem> cartItems;
   final double cartTotal;
   final double todaySales;
+  final PosDisplayCurrency displayCurrency;
+  final double dailyExchangeRate;
   final Future<void> Function() onLogout;
   final Future<PosActionResult> Function() onRefreshData;
   final PosActionResult Function(Product product) onAddProduct;
@@ -1243,6 +1315,11 @@ class PosScreen extends StatefulWidget {
     double paidAmount,
   )
       onCreateOrder;
+  final Future<void> Function(
+    PosDisplayCurrency displayCurrency,
+    double dailyExchangeRate,
+  )
+      onUpdateCurrencySettings;
 
   @override
   State<PosScreen> createState() => _PosScreenState();
@@ -1267,13 +1344,54 @@ class _PosScreenState extends State<PosScreen> {
   bool _allowPartialPayment = false;
   String _searchTerm = '';
 
-  NumberFormat get _currency =>
-      NumberFormat.currency(
+  bool get _isDisplayLbp => widget.displayCurrency == PosDisplayCurrency.lbp;
+
+  double get _safeExchangeRate {
+    final double rate = widget.dailyExchangeRate;
+    if (rate > _qtyEpsilon) return rate;
+    return _defaultLbpPerUsdRate;
+  }
+
+  NumberFormat get _displayCurrencyFormatter => NumberFormat.currency(
         locale: context.locale.toLanguageTag(),
-        name: 'USD',
-        symbol: '\$',
-        decimalDigits: 2,
+        name: _isDisplayLbp ? 'LBP' : 'USD',
+        symbol: _isDisplayLbp ? 'LBP ' : '\$',
+        decimalDigits: _isDisplayLbp ? 0 : 2,
       );
+
+  double _displayToUsd(double amount) {
+    if (_isDisplayLbp) {
+      return amount / _safeExchangeRate;
+    }
+    return amount;
+  }
+
+  double _usdToDisplay(double amount) {
+    if (_isDisplayLbp) {
+      return amount * _safeExchangeRate;
+    }
+    return amount;
+  }
+
+  String _formatMoney(double amountUsd) {
+    final int decimals = _isDisplayLbp ? 0 : 2;
+    final double displayAmount = _usdToDisplay(amountUsd);
+    return _displayCurrencyFormatter.format(_roundQty(displayAmount, decimals));
+  }
+
+  double? _parseDisplayAmountToUsd(String raw) {
+    String normalizedRaw = raw.trim().replaceAll(' ', '');
+    if (normalizedRaw.contains(',') && normalizedRaw.contains('.')) {
+      normalizedRaw = normalizedRaw.replaceAll(',', '');
+    } else if (_isDisplayLbp) {
+      normalizedRaw = normalizedRaw.replaceAll(',', '');
+    } else {
+      normalizedRaw = normalizedRaw.replaceAll(',', '.');
+    }
+    final double? parsed = double.tryParse(normalizedRaw);
+    if (parsed == null) return null;
+    return _roundQty(_displayToUsd(parsed), 2);
+  }
 
   @override
   void dispose() {
@@ -1385,6 +1503,38 @@ class _PosScreenState extends State<PosScreen> {
         .format(value.toLocal());
   }
 
+  Future<void> _openCurrencySettingsDialog() async {
+    final double paidNowUsdBefore = _effectivePaidNow();
+    final bool hadPaidNowValue = _paidNowController.text.trim().isNotEmpty;
+    final _CurrencySettingsResult? result =
+        await showDialog<_CurrencySettingsResult>(
+      context: context,
+      builder: (BuildContext context) {
+        return _CurrencySettingsDialog(
+          displayCurrency: widget.displayCurrency,
+          dailyExchangeRate: widget.dailyExchangeRate,
+        );
+      },
+    );
+
+    if (!mounted || result == null) return;
+
+    await widget.onUpdateCurrencySettings(
+      result.displayCurrency,
+      result.dailyExchangeRate,
+    );
+
+    if (!mounted) return;
+    if (_allowPartialPayment && hadPaidNowValue) {
+      final bool isLbp = result.displayCurrency == PosDisplayCurrency.lbp;
+      final double displayAmount = isLbp
+          ? paidNowUsdBefore * result.dailyExchangeRate
+          : paidNowUsdBefore;
+      _paidNowController.text = _formatQty(displayAmount, isLbp ? 0 : 2);
+    }
+    _barcodeFocusNode.requestFocus();
+  }
+
   Future<void> _openOrdersHistory() async {
     if (_isOpeningOrders) {
       return;
@@ -1399,7 +1549,7 @@ class _PosScreenState extends State<PosScreen> {
       builder: (BuildContext context) {
         return _OrdersHistoryDialog(
           orders: widget.orders.take(10).toList(growable: false),
-          currency: _currency,
+          formatAmount: _formatMoney,
           formatOrderDate: _formatOrderDate,
         );
       },
@@ -1424,7 +1574,7 @@ class _PosScreenState extends State<PosScreen> {
         return _OrderDetailsDialog(
           orderId: selectedOrderId,
           apiClient: _createApiClient(),
-          currency: _currency,
+          formatAmount: _formatMoney,
           formatOrderDate: _formatOrderDate,
           onDataChanged: () async {
             final PosActionResult result = await widget.onRefreshData();
@@ -1510,8 +1660,8 @@ class _PosScreenState extends State<PosScreen> {
         return;
       }
 
-      final double? parsedPaidNow = double.tryParse(rawPaidNow);
-      if (parsedPaidNow == null) {
+      final double? parsedPaidNowUsd = _parseDisplayAmountToUsd(rawPaidNow);
+      if (parsedPaidNowUsd == null) {
         _showMessage(
           PosActionResult(
             success: false,
@@ -1521,7 +1671,7 @@ class _PosScreenState extends State<PosScreen> {
         return;
       }
 
-      final double normalized = _roundQty(parsedPaidNow, 2);
+      final double normalized = _roundQty(parsedPaidNowUsd, 2);
       if (normalized < -_qtyEpsilon) {
         _showMessage(
           PosActionResult(
@@ -1618,7 +1768,7 @@ class _PosScreenState extends State<PosScreen> {
       return total;
     }
 
-    final double? parsed = double.tryParse(_paidNowController.text.trim());
+    final double? parsed = _parseDisplayAmountToUsd(_paidNowController.text);
     if (parsed == null) {
       return 0;
     }
@@ -1854,7 +2004,7 @@ class _PosScreenState extends State<PosScreen> {
                 _tr(
                   'appbar.opening',
                   namedArgs: <String, String>{
-                    'amount': _currency.format(widget.openingCash),
+                    'amount': _formatMoney(widget.openingCash),
                   },
                 ),
               ),
@@ -1867,7 +2017,20 @@ class _PosScreenState extends State<PosScreen> {
                 _tr(
                   'appbar.sales',
                   namedArgs: <String, String>{
-                    'amount': _currency.format(widget.todaySales),
+                    'amount': _formatMoney(widget.todaySales),
+                  },
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Chip(
+              label: Text(
+                _tr(
+                  'currency.current_chip',
+                  namedArgs: <String, String>{
+                    'currency': _displayCurrencyCode(widget.displayCurrency),
                   },
                 ),
               ),
@@ -1900,6 +2063,11 @@ class _PosScreenState extends State<PosScreen> {
                 child: Text(_tr('lang.arabic')),
               ),
             ],
+          ),
+          IconButton(
+            tooltip: _tr('currency.settings_title'),
+            onPressed: _openCurrencySettingsDialog,
+            icon: const Icon(Icons.currency_exchange),
           ),
           if (kIsWeb)
             IconButton(
@@ -2031,7 +2199,7 @@ class _PosScreenState extends State<PosScreen> {
                                   final Product product = visibleProducts[index];
                                   return _ProductCard(
                                     product: product,
-                                    currency: _currency,
+                                    formatAmount: _formatMoney,
                                     onAdd: () {
                                       final PosActionResult result =
                                           widget.onAddProduct(product);
@@ -2125,7 +2293,7 @@ class _PosScreenState extends State<PosScreen> {
                                   child: Text(_tr('cart.empty')),
                                 )
                               : ListView.separated(
-                                  padding: const EdgeInsets.all(8),
+                                  padding: const EdgeInsets.all(6),
                                   itemCount: widget.cartItems.length,
                                   separatorBuilder:
                                       (BuildContext context, int index) {
@@ -2141,7 +2309,7 @@ class _PosScreenState extends State<PosScreen> {
                                     return Padding(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 8,
-                                        vertical: 6,
+                                        vertical: 4,
                                       ),
                                       child: Row(
                                         children: <Widget>[
@@ -2158,8 +2326,8 @@ class _PosScreenState extends State<PosScreen> {
                                                 ),
                                                 Text(
                                                   item.product.isUnitSpecific
-                                                      ? '${_currency.format(item.product.price)} / ${item.product.unitCode}'
-                                                      : _currency.format(item.product.price),
+                                                      ? '${_formatMoney(item.product.price)} / ${item.product.unitCode}'
+                                                      : _formatMoney(item.product.price),
                                                   style: Theme.of(context)
                                                       .textTheme
                                                       .bodySmall,
@@ -2258,7 +2426,7 @@ class _PosScreenState extends State<PosScreen> {
                                           SizedBox(
                                             width: 90,
                                             child: Text(
-                                              _currency.format(item.lineTotal),
+                                              _formatMoney(item.lineTotal),
                                               textAlign: TextAlign.end,
                                               style: Theme.of(context)
                                                   .textTheme
@@ -2275,67 +2443,136 @@ class _PosScreenState extends State<PosScreen> {
                       const SizedBox(height: 12),
                       Card(
                         child: Padding(
-                          padding: const EdgeInsets.all(14),
+                          padding: const EdgeInsets.all(12),
                           child: Column(
                             children: <Widget>[
-                              _SummaryRow(
-                                label: _tr('cart.lines'),
-                                value: widget.cartItems.length.toString(),
+                              LayoutBuilder(
+                                builder: (
+                                  BuildContext context,
+                                  BoxConstraints constraints,
+                                ) {
+                                  final double tileWidth =
+                                      (constraints.maxWidth - 16) / 3;
+                                  return Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: <Widget>[
+                                      SizedBox(
+                                        width: tileWidth,
+                                        child: _SummaryMetricTile(
+                                          label: _tr('cart.lines'),
+                                          value: widget.cartItems.length
+                                              .toString(),
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: tileWidth,
+                                        child: _SummaryMetricTile(
+                                          label: _tr('cart.subtotal'),
+                                          value: _formatMoney(
+                                            widget.cartTotal,
+                                          ),
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: tileWidth,
+                                        child: _SummaryMetricTile(
+                                          label: _tr('cart.total'),
+                                          value: _formatMoney(
+                                            widget.cartTotal,
+                                          ),
+                                          isEmphasized: true,
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
                               ),
-                              _SummaryRow(
-                                label: _tr('cart.subtotal'),
-                                value: _currency.format(widget.cartTotal),
-                              ),
-                              const Divider(height: 20),
-                              _SummaryRow(
-                                label: _tr('cart.total'),
-                                value: _currency.format(widget.cartTotal),
-                                isTotal: true,
-                              ),
-                              const SizedBox(height: 8),
-                              SwitchListTile.adaptive(
-                                contentPadding: EdgeInsets.zero,
-                                title: Text(_tr('payment.partial_title')),
-                                subtitle: Text(
-                                  _tr('payment.partial_subtitle'),
+                              const SizedBox(height: 10),
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
                                 ),
-                                value: _allowPartialPayment,
-                                onChanged: widget.cartItems.isEmpty
-                                    ? null
-                                    : (bool value) {
-                                        setState(() {
-                                          _allowPartialPayment = value;
-                                          _paidNowController.clear();
-                                        });
-                                      },
-                              ),
-                              if (_allowPartialPayment)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: TextField(
-                                    controller: _paidNowController,
-                                    keyboardType:
-                                        const TextInputType.numberWithOptions(
-                                      decimal: true,
-                                    ),
-                                    onChanged: (_) => setState(() {}),
-                                    decoration: InputDecoration(
-                                      border: OutlineInputBorder(),
-                                      labelText: _tr('payment.paid_now_label'),
-                                      hintText: _tr('payment.paid_now_hint'),
-                                      prefixIcon: Icon(Icons.payments_outlined),
-                                    ),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.outlineVariant,
                                   ),
                                 ),
-                              _SummaryRow(
-                                label: _tr('payment.paid_now'),
-                                value: _currency.format(_effectivePaidNow()),
+                                child: Column(
+                                  children: <Widget>[
+                                    Row(
+                                      children: <Widget>[
+                                        Expanded(
+                                          child: Text(
+                                            _tr('payment.partial_title'),
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.titleSmall,
+                                          ),
+                                        ),
+                                        Switch.adaptive(
+                                          value: _allowPartialPayment,
+                                          onChanged: widget.cartItems.isEmpty
+                                              ? null
+                                              : (bool value) {
+                                                  setState(() {
+                                                    _allowPartialPayment =
+                                                        value;
+                                                    _paidNowController.clear();
+                                                  });
+                                                },
+                                        ),
+                                      ],
+                                    ),
+                                    if (_allowPartialPayment) ...<Widget>[
+                                      Text(
+                                        _tr('payment.partial_subtitle'),
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _paidNowController,
+                                        keyboardType:
+                                            const TextInputType.numberWithOptions(
+                                          decimal: true,
+                                        ),
+                                        onChanged: (_) => setState(() {}),
+                                        decoration: InputDecoration(
+                                          isDense: true,
+                                          border: const OutlineInputBorder(),
+                                          labelText:
+                                              '${_tr('payment.paid_now_label')} (${_displayCurrencyCode(widget.displayCurrency)})',
+                                          hintText:
+                                              '${_tr('payment.paid_now_hint')} (${_displayCurrencyCode(widget.displayCurrency)})',
+                                          prefixIcon:
+                                              const Icon(Icons.payments_outlined),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      _SummaryRow(
+                                        label: _tr('payment.paid_now'),
+                                        value: _formatMoney(
+                                          _effectivePaidNow(),
+                                        ),
+                                      ),
+                                      _SummaryRow(
+                                        label: _tr('payment.remaining'),
+                                        value: _formatMoney(
+                                          _remainingAfterCheckout(),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
                               ),
-                              _SummaryRow(
-                                label: _tr('payment.remaining'),
-                                value: _currency.format(_remainingAfterCheckout()),
-                              ),
-                              const SizedBox(height: 12),
+                              const SizedBox(height: 10),
                               SizedBox(
                                 width: double.infinity,
                                 child: FilledButton.icon(
@@ -2373,15 +2610,148 @@ class _PosScreenState extends State<PosScreen> {
   }
 }
 
+@immutable
+class _CurrencySettingsResult {
+  const _CurrencySettingsResult({
+    required this.displayCurrency,
+    required this.dailyExchangeRate,
+  });
+
+  final PosDisplayCurrency displayCurrency;
+  final double dailyExchangeRate;
+}
+
+class _CurrencySettingsDialog extends StatefulWidget {
+  const _CurrencySettingsDialog({
+    required this.displayCurrency,
+    required this.dailyExchangeRate,
+  });
+
+  final PosDisplayCurrency displayCurrency;
+  final double dailyExchangeRate;
+
+  @override
+  State<_CurrencySettingsDialog> createState() => _CurrencySettingsDialogState();
+}
+
+class _CurrencySettingsDialogState extends State<_CurrencySettingsDialog> {
+  late PosDisplayCurrency _displayCurrency;
+  late TextEditingController _exchangeRateController;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _displayCurrency = widget.displayCurrency;
+    _exchangeRateController = TextEditingController(
+      text: _formatQty(widget.dailyExchangeRate, 0),
+    );
+  }
+
+  @override
+  void dispose() {
+    _exchangeRateController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final String rawRate = _exchangeRateController.text
+        .trim()
+        .replaceAll(',', '')
+        .replaceAll(' ', '');
+    final double? parsedRate = double.tryParse(rawRate);
+    if (parsedRate == null || parsedRate <= _qtyEpsilon) {
+      setState(() {
+        _error = _tr('currency.exchange_rate_invalid');
+      });
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _CurrencySettingsResult(
+        displayCurrency: _displayCurrency,
+        dailyExchangeRate: _roundQty(parsedRate, 2),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(_tr('currency.settings_title')),
+      content: SizedBox(
+        width: 430,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            DropdownButtonFormField<PosDisplayCurrency>(
+              value: _displayCurrency,
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                labelText: _tr('currency.display_currency_label'),
+              ),
+              items: <DropdownMenuItem<PosDisplayCurrency>>[
+                DropdownMenuItem<PosDisplayCurrency>(
+                  value: PosDisplayCurrency.usd,
+                  child: Text(_tr('currency.usd')),
+                ),
+                DropdownMenuItem<PosDisplayCurrency>(
+                  value: PosDisplayCurrency.lbp,
+                  child: Text(_tr('currency.lbp')),
+                ),
+              ],
+              onChanged: (PosDisplayCurrency? value) {
+                if (value == null) return;
+                setState(() {
+                  _displayCurrency = value;
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _exchangeRateController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                labelText: _tr('currency.exchange_rate_label'),
+                hintText: _tr('currency.exchange_rate_hint'),
+                helperText: _tr('currency.exchange_rate_helper'),
+              ),
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(_tr('common.cancel')),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: Text(_tr('common.continue')),
+        ),
+      ],
+    );
+  }
+}
+
 class _OrdersHistoryDialog extends StatelessWidget {
   const _OrdersHistoryDialog({
     required this.orders,
-    required this.currency,
+    required this.formatAmount,
     required this.formatOrderDate,
   });
 
   final List<PosOrder> orders;
-  final NumberFormat currency;
+  final String Function(double amountUsd) formatAmount;
   final String Function(DateTime?) formatOrderDate;
 
   @override
@@ -2443,7 +2813,7 @@ class _OrdersHistoryDialog extends StatelessWidget {
                               _tr(
                                 'orders.total_inline',
                                 namedArgs: <String, String>{
-                                  'amount': currency.format(order.total),
+                                  'amount': formatAmount(order.total),
                                 },
                               ),
                               maxLines: 1,
@@ -2453,7 +2823,7 @@ class _OrdersHistoryDialog extends StatelessWidget {
                               _tr(
                                 'orders.paid_inline',
                                 namedArgs: <String, String>{
-                                  'amount': currency.format(order.paid),
+                                  'amount': formatAmount(order.paid),
                                 },
                               ),
                               maxLines: 1,
@@ -2464,7 +2834,7 @@ class _OrdersHistoryDialog extends StatelessWidget {
                                 _tr(
                                   'orders.remaining_inline',
                                   namedArgs: <String, String>{
-                                    'amount': currency.format(
+                                    'amount': formatAmount(
                                       order.remainingBalance,
                                     ),
                                   },
@@ -2497,14 +2867,14 @@ class _OrderDetailsDialog extends StatefulWidget {
   const _OrderDetailsDialog({
     required this.orderId,
     required this.apiClient,
-    required this.currency,
+    required this.formatAmount,
     required this.formatOrderDate,
     required this.onDataChanged,
   });
 
   final int orderId;
   final Mashroo3ApiClient apiClient;
-  final NumberFormat currency;
+  final String Function(double amountUsd) formatAmount;
   final String Function(DateTime?) formatOrderDate;
   final Future<void> Function() onDataChanged;
 
@@ -2649,7 +3019,7 @@ class _OrderDetailsDialogState extends State<_OrderDetailsDialog> {
           : _tr(
               'messages.refund_processed_total',
               namedArgs: <String, String>{
-                'amount': widget.currency.format(result.refundTotal!),
+                'amount': widget.formatAmount(result.refundTotal!),
               },
             );
       _showMessage(PosActionResult(success: true, message: message));
@@ -2774,19 +3144,19 @@ class _OrderDetailsDialogState extends State<_OrderDetailsDialog> {
                                     children: <Widget>[
                                       _SummaryRow(
                                         label: _tr('orders.total_label'),
-                                        value: widget.currency.format(
+                                        value: widget.formatAmount(
                                           details.order.total,
                                         ),
                                       ),
                                       _SummaryRow(
                                         label: _tr('orders.paid_label'),
-                                        value: widget.currency.format(
+                                        value: widget.formatAmount(
                                           details.order.paid,
                                         ),
                                       ),
                                       _SummaryRow(
                                         label: _tr('orders.remaining_label'),
-                                        value: widget.currency.format(
+                                        value: widget.formatAmount(
                                           details.order.remainingBalance,
                                         ),
                                       ),
@@ -2844,8 +3214,9 @@ class _OrderDetailsDialogState extends State<_OrderDetailsDialog> {
                                                         item.quantity,
                                                       ),
                                                       'unit': item.unitCode,
-                                                      'price': widget.currency
-                                                          .format(item.price),
+                                                      'price': widget.formatAmount(
+                                                        item.price,
+                                                      ),
                                                     },
                                                   ),
                                                 ),
@@ -2876,8 +3247,7 @@ class _OrderDetailsDialogState extends State<_OrderDetailsDialog> {
                                           ),
                                           const SizedBox(width: 8),
                                           Text(
-                                            widget.currency
-                                                .format(item.lineTotal),
+                                            widget.formatAmount(item.lineTotal),
                                             style: Theme.of(context)
                                                 .textTheme
                                                 .titleSmall,
@@ -2904,7 +3274,7 @@ class _OrderDetailsDialogState extends State<_OrderDetailsDialog> {
                                   'orders.refund_hint',
                                   namedArgs: <String, String>{
                                     'items': '${remainingRefundItems.length}',
-                                    'amount': widget.currency.format(
+                                    'amount': widget.formatAmount(
                                       estimatedRefund,
                                     ),
                                   },
@@ -2945,10 +3315,10 @@ class _OrderDetailsDialogState extends State<_OrderDetailsDialog> {
                                             _tr(
                                               'orders.refund_entry_summary',
                                               namedArgs: <String, String>{
-                                                'total': widget.currency.format(
+                                                'total': widget.formatAmount(
                                                   refund.refundTotal,
                                                 ),
-                                                'paid': widget.currency.format(
+                                                'paid': widget.formatAmount(
                                                   refund.refundPaid,
                                                 ),
                                                 'date': widget.formatOrderDate(
@@ -3218,12 +3588,12 @@ class _CreateCustomerDialogState extends State<_CreateCustomerDialog> {
 class _ProductCard extends StatelessWidget {
   const _ProductCard({
     required this.product,
-    required this.currency,
+    required this.formatAmount,
     required this.onAdd,
   });
 
   final Product product;
-  final NumberFormat currency;
+  final String Function(double amountUsd) formatAmount;
   final VoidCallback onAdd;
 
   @override
@@ -3286,8 +3656,8 @@ class _ProductCard extends StatelessWidget {
                   const Spacer(),
                   Text(
                     product.isUnitSpecific
-                        ? '${currency.format(product.price)} / ${product.unitCode}'
-                        : currency.format(product.price),
+                        ? '${formatAmount(product.price)} / ${product.unitCode}'
+                        : formatAmount(product.price),
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 8),
@@ -3373,6 +3743,46 @@ class _SummaryRow extends StatelessWidget {
         children: <Widget>[
           Text(label, style: style),
           Text(value, style: style),
+        ],
+      ),
+    );
+  }
+}
+
+class _SummaryMetricTile extends StatelessWidget {
+  const _SummaryMetricTile({
+    required this.label,
+    required this.value,
+    this.isEmphasized = false,
+  });
+
+  final String label;
+  final String value;
+  final bool isEmphasized;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colorScheme.outlineVariant),
+        color: isEmphasized ? colorScheme.primary.withOpacity(0.08) : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(label, style: Theme.of(context).textTheme.labelMedium),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(
+                  fontWeight: isEmphasized ? FontWeight.w700 : FontWeight.w600,
+                ),
+          ),
         ],
       ),
     );
@@ -3560,9 +3970,128 @@ class _SessionErrorScreenState extends State<_SessionErrorScreen> {
 }
 
 @immutable
+class VariantOption {
+  const VariantOption({
+    required this.name,
+    required this.value,
+  });
+
+  final String name;
+  final String value;
+
+  String get displayLabel => '$name: $value';
+
+  factory VariantOption.fromJson(Map<String, dynamic> json) {
+    return VariantOption(
+      name: (_toString(json['name']) ?? '').trim(),
+      value: (_toString(json['value']) ?? '').trim(),
+    );
+  }
+}
+
+@immutable
+class ProductVariant {
+  const ProductVariant({
+    required this.id,
+    required this.label,
+    required this.price,
+    required this.barcode,
+    required this.sku,
+    required this.imageUrl,
+    required this.isActive,
+    required this.isDefault,
+    required this.isUnitSpecific,
+    required this.sellUnitCode,
+    required this.sellQtyStep,
+    required this.availableQty,
+    required this.options,
+  });
+
+  final int id;
+  final String label;
+  final double price;
+  final String barcode;
+  final String sku;
+  final String? imageUrl;
+  final bool isActive;
+  final bool isDefault;
+  final bool isUnitSpecific;
+  final String sellUnitCode;
+  final double sellQtyStep;
+  final double? availableQty;
+  final List<VariantOption> options;
+
+  String get unitCode => sellUnitCode.trim().isEmpty ? 'pcs' : sellUnitCode;
+
+  double get cartQtyStep {
+    if (!isUnitSpecific) return 1;
+    return sellQtyStep > 0 ? _roundQty(sellQtyStep) : 1;
+  }
+
+  String get optionsSummary {
+    if (options.isEmpty) return '';
+    return options
+        .where((VariantOption option) =>
+            option.name.trim().isNotEmpty && option.value.trim().isNotEmpty)
+        .map((VariantOption option) => option.displayLabel)
+        .join(' • ');
+  }
+
+  factory ProductVariant.fromJson(
+    Map<String, dynamic> json, {
+    required String baseUrl,
+  }) {
+    final int? id = _toInt(json['id']);
+    if (id == null || id <= 0) {
+      throw FormatException(_tr('errors.product_id_missing'));
+    }
+
+    final String sellUnitCode = _toString(json['sell_unit_code']) ?? 'pcs';
+    final double sellQtyStep = _toDouble(json['sell_qty_step']) ?? 1;
+    final bool computedUnitSpecific =
+        (sellQtyStep - 1).abs() > _qtyEpsilon || sellUnitCode != 'pcs';
+
+    final List<VariantOption> options = <VariantOption>[];
+    final dynamic rawOptions = json['options'];
+    if (rawOptions is List) {
+      for (final dynamic rawOption in rawOptions) {
+        final Map<String, dynamic>? map = _toMap(rawOption);
+        if (map == null) continue;
+        final VariantOption option = VariantOption.fromJson(map);
+        if (option.name.isEmpty || option.value.isEmpty) continue;
+        options.add(option);
+      }
+    }
+
+    return ProductVariant(
+      id: id,
+      label: (_toString(json['label']) ?? _tr('product.default_variant')).trim(),
+      price: _toDouble(json['price']) ?? 0,
+      barcode: (_toString(json['barcode']) ?? '').trim(),
+      sku: (_toString(json['sku']) ?? '').trim(),
+      imageUrl: _normalizeImageUrl(
+        json['image_url'] ?? json['image'] ?? json['photo_url'] ?? json['photo'],
+        baseUrl,
+      ),
+      isActive: json['is_active'] != false,
+      isDefault: json['is_default'] == true,
+      isUnitSpecific: json['is_unit_specific'] == true || computedUnitSpecific,
+      sellUnitCode: sellUnitCode,
+      sellQtyStep: sellQtyStep,
+      availableQty: _toDouble(json['available_qty']),
+      options: List<VariantOption>.unmodifiable(options),
+    );
+  }
+}
+
+@immutable
 class Product {
   const Product({
     required this.id,
+    required this.sourceProductId,
+    required this.variantId,
+    required this.variantLabel,
+    required this.variantOptionsSummary,
     required this.name,
     required this.description,
     required this.price,
@@ -3572,9 +4101,14 @@ class Product {
     required this.sellUnitCode,
     required this.sellQtyStep,
     required this.availableQty,
+    required this.variants,
   });
 
   final int id;
+  final int sourceProductId;
+  final int? variantId;
+  final String? variantLabel;
+  final String variantOptionsSummary;
   final String name;
   final String description;
   final double price;
@@ -3584,12 +4118,68 @@ class Product {
   final String sellUnitCode;
   final double sellQtyStep;
   final double? availableQty;
+  final List<ProductVariant> variants;
 
   String get unitCode => sellUnitCode.trim().isEmpty ? 'pcs' : sellUnitCode;
 
   double get cartQtyStep {
     if (!isUnitSpecific) return 1;
     return sellQtyStep > 0 ? _roundQty(sellQtyStep) : 1;
+  }
+
+  List<ProductVariant> get selectableVariants {
+    final List<ProductVariant> active = variants
+        .where((ProductVariant variant) => variant.isActive)
+        .toList(growable: false);
+    if (active.isNotEmpty) return active;
+    return variants;
+  }
+
+  bool get hasMultipleVariants => selectableVariants.length > 1;
+
+  String get cartKey {
+    if (variantId != null && variantId! > 0) {
+      return 'v:$variantId';
+    }
+    return 'p:$sourceProductId';
+  }
+
+  ProductVariant? get defaultVariant {
+    if (selectableVariants.isEmpty) return null;
+
+    if (variantId != null && variantId! > 0) {
+      for (final ProductVariant variant in selectableVariants) {
+        if (variant.id == variantId) return variant;
+      }
+    }
+
+    for (final ProductVariant variant in selectableVariants) {
+      if (variant.isDefault) return variant;
+    }
+
+    return selectableVariants.first;
+  }
+
+  Product forVariant(ProductVariant variant) {
+    return Product(
+      id: _variantCartId(sourceProductId, variant.id),
+      sourceProductId: sourceProductId,
+      variantId: variant.id,
+      variantLabel: variant.label.trim().isEmpty
+          ? _tr('product.default_variant')
+          : variant.label.trim(),
+      variantOptionsSummary: variant.optionsSummary,
+      name: name,
+      description: description,
+      price: variant.price,
+      barcode: variant.barcode,
+      imageUrl: variant.imageUrl ?? imageUrl,
+      isUnitSpecific: variant.isUnitSpecific,
+      sellUnitCode: variant.sellUnitCode,
+      sellQtyStep: variant.sellQtyStep,
+      availableQty: variant.availableQty,
+      variants: variants,
+    );
   }
 
   factory Product.fromJson(Map<String, dynamic> json, {required String baseUrl}) {
@@ -3605,37 +4195,84 @@ class Product {
         _toString(json['summary']) ??
         _tr('fallback.no_description');
 
-    final double price = _toDouble(json['price']) ?? 0;
-    final String barcode = (_toString(json['barcode']) ??
+    final List<ProductVariant> parsedVariants = <ProductVariant>[];
+    final dynamic rawVariants = json['variants'];
+    if (rawVariants is List) {
+      for (final dynamic rawVariant in rawVariants) {
+        final Map<String, dynamic>? map = _toMap(rawVariant);
+        if (map == null) continue;
+        try {
+          parsedVariants.add(ProductVariant.fromJson(map, baseUrl: baseUrl));
+        } catch (_) {
+          continue;
+        }
+      }
+    }
+
+    final int? defaultVariantId = _toInt(json['default_variant_id']);
+    ProductVariant? selectedVariant;
+
+    if (defaultVariantId != null && defaultVariantId > 0) {
+      for (final ProductVariant variant in parsedVariants) {
+        if (variant.id == defaultVariantId) {
+          selectedVariant = variant;
+          break;
+        }
+      }
+    }
+
+    if (selectedVariant == null && parsedVariants.isNotEmpty) {
+      for (final ProductVariant variant in parsedVariants) {
+        if (variant.isDefault) {
+          selectedVariant = variant;
+          break;
+        }
+      }
+      selectedVariant ??= parsedVariants.first;
+    }
+
+    final double fallbackPrice = _toDouble(json['price']) ?? 0;
+    final String fallbackBarcode = (_toString(json['barcode']) ??
             _toString(json['sku']) ??
             _toString(json['code']) ??
             '')
         .trim();
-
-    final String? imageUrl = _normalizeImageUrl(
+    final String? fallbackImageUrl = _normalizeImageUrl(
       json['image_url'] ?? json['image'] ?? json['photo_url'] ?? json['photo'],
       baseUrl,
     );
-
-    final bool isUnitSpecific = json['is_unit_specific'] == true;
-    final String sellUnitCode = _toString(json['sell_unit_code']) ?? 'pcs';
-    final double sellQtyStep = _toDouble(json['sell_qty_step']) ?? 1;
-    final double? availableQty = _toDouble(
+    final bool fallbackUnitSpecific = json['is_unit_specific'] == true;
+    final String fallbackSellUnitCode = _toString(json['sell_unit_code']) ?? 'pcs';
+    final double fallbackSellQtyStep = _toDouble(json['sell_qty_step']) ?? 1;
+    final double? fallbackAvailableQty = _toDouble(
       json['available_qty'] ?? json['quantity'] ?? json['stock'],
     );
 
-    return Product(
+    final Product base = Product(
       id: id,
+      sourceProductId: id,
+      variantId: selectedVariant?.id,
+      variantLabel: selectedVariant?.label,
+      variantOptionsSummary: selectedVariant?.optionsSummary ?? '',
       name: name,
       description: description,
-      price: price,
-      barcode: barcode,
-      imageUrl: imageUrl,
-      isUnitSpecific: isUnitSpecific,
-      sellUnitCode: sellUnitCode,
-      sellQtyStep: sellQtyStep,
-      availableQty: availableQty,
+      price: selectedVariant?.price ?? fallbackPrice,
+      barcode: selectedVariant?.barcode.isNotEmpty == true
+          ? selectedVariant!.barcode
+          : fallbackBarcode,
+      imageUrl: selectedVariant?.imageUrl ?? fallbackImageUrl,
+      isUnitSpecific: selectedVariant?.isUnitSpecific ?? fallbackUnitSpecific,
+      sellUnitCode: selectedVariant?.sellUnitCode ?? fallbackSellUnitCode,
+      sellQtyStep: selectedVariant?.sellQtyStep ?? fallbackSellQtyStep,
+      availableQty: selectedVariant?.availableQty ?? fallbackAvailableQty,
+      variants: List<ProductVariant>.unmodifiable(parsedVariants),
     );
+
+    if (selectedVariant != null && selectedVariant.id > 0) {
+      return base.forVariant(selectedVariant);
+    }
+
+    return base;
   }
 }
 

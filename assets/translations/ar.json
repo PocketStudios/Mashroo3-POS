@@ -200,5 +200,16 @@
     "product": "منتج",
     "customer": "عميل",
     "no_description": "بدون وصف"
+  },
+  "currency": {
+    "settings_title": "إعدادات العملة",
+    "current_chip": "الواجهة: {currency}",
+    "display_currency_label": "عملة العرض",
+    "usd": "USD",
+    "lbp": "LBP",
+    "exchange_rate_label": "سعر الصرف اليومي (ل.ل لكل دولار)",
+    "exchange_rate_hint": "مثال: 89500",
+    "exchange_rate_helper": "الطلبات تبقى بالدولار. قيم الواجهة بالليرة تعتمد هذا السعر.",
+    "exchange_rate_invalid": "أدخل سعر صرف صحيحًا أكبر من صفر."
   }
 }

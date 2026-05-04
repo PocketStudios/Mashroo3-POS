@@ -200,5 +200,16 @@
     "product": "Product",
     "customer": "Customer",
     "no_description": "No description"
+  },
+  "currency": {
+    "settings_title": "Currency settings",
+    "current_chip": "UI: {currency}",
+    "display_currency_label": "Display currency",
+    "usd": "USD",
+    "lbp": "LBP",
+    "exchange_rate_label": "Daily exchange rate (LBP per USD)",
+    "exchange_rate_hint": "e.g. 89500",
+    "exchange_rate_helper": "Orders stay in USD. UI values in LBP use this rate.",
+    "exchange_rate_invalid": "Enter a valid exchange rate greater than zero."
   }
 }
