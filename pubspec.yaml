@@ -34,7 +34,7 @@ flutter:
     - assets/logo.jpg
 
 msix_config:
-  display_name: Mashroo3 POS
+  display_name: Mashroo3
   publisher_display_name: PocketStudios
   identity_name: 41934PocketStudios.Mashroo3
   publisher: CN=13984534-2238-48D7-B924-B6106D55960C
