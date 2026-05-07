@@ -51,7 +51,7 @@ jobs:
             artifacts: |
               windows-full-release.zip
               windows-updater-files.zip
-              mashroo3-store.msix
+              mashroo3.msix
             command: |
               # 1. Normal Build
               flutter build windows --release
