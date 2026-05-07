@@ -23,6 +23,10 @@ const String _apiBaseUrl = 'https://mashroo3.net';
 const String _desktopAppArchiveUrl = 'https://mashroo3.net/app-archive.json';
 const double _defaultLbpPerUsdRate = 89500;
 const double _qtyEpsilon = 1e-6;
+const bool _disableDesktopUpdater = bool.fromEnvironment(
+  'DISABLE_DESKTOP_UPDATER',
+  defaultValue: false,
+);
 
 double _roundQty(double value, [int decimals = 3]) {
   return double.parse(value.toStringAsFixed(decimals));
@@ -96,6 +100,7 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
 
   bool get _supportsDesktopUpdater {
     if (kIsWeb) return false;
+    if (_disableDesktopUpdater) return false;
     return defaultTargetPlatform == TargetPlatform.windows ||
         defaultTargetPlatform == TargetPlatform.macOS ||
         defaultTargetPlatform == TargetPlatform.linux;

@@ -45,20 +45,27 @@ jobs:
               dart run desktop_updater:archive linux
               tar -czf linux-updater-files.tar.gz -C dist .
 
-          # --- WINDOWS (Both) ---
+                    # --- WINDOWS (Full + Updater + MSIX) ---
           - platform: windows
             os: windows-latest
             artifacts: |
               windows-full-release.zip
               windows-updater-files.zip
+              mashroo3-store.msix
             command: |
               # 1. Normal Build
               flutter build windows --release
               Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows-full-release.zip
+              
               # 2. Desktop Updater Build
               dart run desktop_updater:release windows
               dart run desktop_updater:archive windows
               Compress-Archive -Path dist/* -DestinationPath windows-updater-files.zip
+              
+              # 3. MSIX Build for Microsoft Store
+              # Note: Parameters like --identity-name and --publisher-display-name 
+              # should match your Microsoft Partner Center dashboard exactly.
+              dart run msix:create
 
           # --- MACOS (Both) ---
           - platform: macos

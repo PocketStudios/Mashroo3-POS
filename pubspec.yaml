@@ -2,7 +2,7 @@ name: mashroo3
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 2.5.0+5
+version: 2.5.1+5
 
 environment:
   sdk: ^3.10.7
@@ -24,9 +24,23 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  msix: ^3.16.13
 
 flutter:
   uses-material-design: true
   assets:
     - assets/translations/
     - assets/mashroo3.exe
+    - assets/logo.jpg
+
+msix_config:
+  display_name: Mashroo3 POS
+  publisher_display_name: PocketStudios
+  identity_name: 41934PocketStudios.Mashroo3
+  publisher: CN=13984534-2238-48D7-B924-B6106D55960C
+  msix_version: 2.5.1.0
+  architecture: x64
+  capabilities: internetClient
+  logo: assets/logo.jpg
+  store: true
+  windows_build_args: --dart-define=DISABLE_DESKTOP_UPDATER=true
