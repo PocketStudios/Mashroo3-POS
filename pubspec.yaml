@@ -2,7 +2,7 @@ name: mashroo3
 description: "Mashroo3 POS App"
 publish_to: 'none'
 
-version: 2.5.1+5
+version: 2.6.0+6
 
 environment:
   sdk: ^3.10.7
@@ -20,6 +20,7 @@ dependencies:
   easy_localization: ^3.0.7+1
   desktop_updater: ^1.4.0
   flutter_inappwebview: ^6.1.5
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:
@@ -31,7 +32,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/translations/
-    # - assets/mashroo3.exe
     - assets/logo.jpg
 
 msix_config:
@@ -39,7 +39,7 @@ msix_config:
   publisher_display_name: PocketStudios
   identity_name: 41934PocketStudios.Mashroo3
   publisher: CN=13984534-2238-48D7-B924-B6106D55960C
-  msix_version: 2.5.1.0
+  msix_version: 2.6.0.0
   architecture: x64
   capabilities: internetClient
   logo_path: assets/logo.jpg

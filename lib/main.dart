@@ -8,17 +8,18 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
-import 'package:pwa_install/pwa_install.dart';
+import 'package:pwa_install/pwa_install.dart' hide LaunchMode;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-import 'remote_control/remote_control_common.dart';
-import 'remote_control/remote_control_launcher.dart';
+import 'chatwoot/chatwoot_bubble.dart';
+import 'chatwoot/chatwoot_controller.dart';
 import 'updater_restart/updater_restart.dart';
 
 const String _apiKeyStorageKey = 'pos_api_key';
+const String _appModeStorageKey = 'pos_app_mode';
 const String _displayCurrencyStorageKey = 'pos_display_currency';
 const String _dailyExchangeRateStorageKey = 'pos_daily_exchange_rate';
-const String _remoteControlAssetPath = 'assets/mashroo3.exe';
 const String _apiBaseUrl = 'https://mashroo3.net';
 const String _desktopAppArchiveUrl = 'https://mashroo3.net/app-archive.json';
 const double _defaultLbpPerUsdRate = 89500;
@@ -27,6 +28,8 @@ const bool _disableDesktopUpdater = bool.fromEnvironment(
   'DISABLE_DESKTOP_UPDATER',
   defaultValue: false,
 );
+final GlobalKey<NavigatorState> _appNavigatorKey = GlobalKey<NavigatorState>();
+final ChatwootController _appChatwootController = ChatwootController();
 
 double _roundQty(double value, [int decimals = 3]) {
   return double.parse(value.toStringAsFixed(decimals));
@@ -38,8 +41,34 @@ String _formatQty(double value, [int decimals = 3]) {
   return trimmed.isEmpty ? '0' : trimmed;
 }
 
+String _maskApiKey(String key) {
+  final String trimmed = key.trim();
+  if (trimmed.isEmpty) {
+    return 'none';
+  }
+  if (trimmed.length <= 4) {
+    return '$trimmed****';
+  }
+  return '${trimmed.substring(0, 4)}****';
+}
+
 String _tr(String key, {Map<String, String>? namedArgs}) {
   return key.tr(namedArgs: namedArgs);
+}
+
+Widget _wrapWithChatwootShell(
+  Widget child, {
+  bool isEnabled = true,
+}) {
+  if (!isEnabled) {
+    return child;
+  }
+  return ChatwootAppShell(
+    controller: _appChatwootController,
+    navigatorKey: _appNavigatorKey,
+    child: child,
+    showLauncher: false,
+  );
 }
 
 int _variantCartId(int productId, int variantId) {
@@ -47,6 +76,8 @@ int _variantCartId(int productId, int variantId) {
 }
 
 enum PosDisplayCurrency { usd, lbp }
+
+enum PosAppMode { pos, customerPriceCheck }
 
 String _displayCurrencyCode(PosDisplayCurrency value) {
   switch (value) {
@@ -61,6 +92,23 @@ PosDisplayCurrency _displayCurrencyFromCode(String? value) {
   final String normalized = (value ?? '').trim().toUpperCase();
   if (normalized == 'LBP') return PosDisplayCurrency.lbp;
   return PosDisplayCurrency.usd;
+}
+
+String _appModeCode(PosAppMode value) {
+  switch (value) {
+    case PosAppMode.customerPriceCheck:
+      return 'customer_price_check';
+    case PosAppMode.pos:
+      return 'pos';
+  }
+}
+
+PosAppMode _appModeFromCode(String? value) {
+  final String normalized = (value ?? '').trim().toLowerCase();
+  if (normalized == 'customer_price_check') {
+    return PosAppMode.customerPriceCheck;
+  }
+  return PosAppMode.pos;
 }
 
 Future<void> main() async {
@@ -214,9 +262,13 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
     if (_isChecking) {
       return MaterialApp(
         debugShowCheckedModeBanner: false,
+        navigatorKey: _appNavigatorKey,
         localizationsDelegates: context.localizationDelegates,
         supportedLocales: context.supportedLocales,
         locale: context.locale,
+        builder: (BuildContext context, Widget? child) {
+          return _wrapWithChatwootShell(child ?? const SizedBox.shrink());
+        },
         home: Scaffold(
           body: Center(
             child: ConstrainedBox(
@@ -268,9 +320,13 @@ class _DesktopUpdateGateState extends State<_DesktopUpdateGate> {
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      navigatorKey: _appNavigatorKey,
       localizationsDelegates: context.localizationDelegates,
       supportedLocales: context.supportedLocales,
       locale: context.locale,
+      builder: (BuildContext context, Widget? child) {
+        return _wrapWithChatwootShell(child ?? const SizedBox.shrink());
+      },
       home: Scaffold(
         body: Center(
           child: ConstrainedBox(
@@ -422,6 +478,7 @@ class _PosAppState extends State<PosApp> {
 
   Customer? _selectedCustomer;
   String? _apiKey;
+  PosAppMode _appMode = PosAppMode.pos;
   double? _openingCash;
   PosDisplayCurrency _displayCurrency = PosDisplayCurrency.usd;
   double _dailyExchangeRate = _defaultLbpPerUsdRate;
@@ -433,7 +490,14 @@ class _PosAppState extends State<PosApp> {
   void initState() {
     super.initState();
     _selectedCustomer = _customers.first;
+    _queueChatwootSync();
     _loadStoredSession();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _queueChatwootSync();
   }
 
   Future<void> _loadStoredSession() async {
@@ -442,6 +506,9 @@ class _PosAppState extends State<PosApp> {
       return;
     }
 
+    final String? storedApiKey = prefs.getString(_apiKeyStorageKey);
+    final PosAppMode storedMode =
+        _appModeFromCode(prefs.getString(_appModeStorageKey));
     final String? storedCurrency = prefs.getString(_displayCurrencyStorageKey);
     final double? storedRate = prefs.getDouble(_dailyExchangeRateStorageKey) ??
         _toDouble(prefs.getString(_dailyExchangeRateStorageKey));
@@ -451,11 +518,105 @@ class _PosAppState extends State<PosApp> {
             : _defaultLbpPerUsdRate;
 
     setState(() {
-      _apiKey = prefs.getString(_apiKeyStorageKey);
+      _apiKey = storedApiKey;
+      _appMode = storedMode;
       _displayCurrency = _displayCurrencyFromCode(storedCurrency);
       _dailyExchangeRate = normalizedRate;
       _isLoading = false;
     });
+    _queueChatwootSync();
+
+    if (storedApiKey != null &&
+        storedApiKey.trim().isNotEmpty &&
+        storedMode == PosAppMode.customerPriceCheck) {
+      await _loadPosData();
+    }
+  }
+
+  String _maskApiKeyForChat(String key) {
+    return _maskApiKey(key);
+  }
+
+  String _buildChatIdentifier() {
+    final String? apiKey = _apiKey;
+    if (apiKey == null || apiKey.trim().isEmpty) {
+      return 'pos-terminal';
+    }
+    return 'pos-${_maskApiKeyForChat(apiKey)}';
+  }
+
+  String _activeLocaleTag() {
+    final Locale? locale = Localizations.maybeLocaleOf(context);
+    if (locale != null) {
+      return locale.toLanguageTag();
+    }
+    return WidgetsBinding.instance.platformDispatcher.locale.toLanguageTag();
+  }
+
+  Map<String, dynamic> _buildChatAttributes() {
+    final Customer? selectedCustomer = _selectedCustomer;
+    final bool hasApiKey = (_apiKey ?? '').trim().isNotEmpty;
+    final String selectedCustomerLabel =
+        selectedCustomer == null || selectedCustomer.isWalkIn
+            ? _tr('customer.walk_in')
+            : selectedCustomer.displayLabel;
+
+    return <String, dynamic>{
+      'login_state': hasApiKey ? 'identified' : 'anonymous',
+      'app_mode': _appModeCode(_appMode),
+      'api_key_prefix': hasApiKey ? _maskApiKeyForChat(_apiKey!) : 'none',
+      'locale': _activeLocaleTag(),
+      'display_currency': _displayCurrencyCode(_displayCurrency),
+      'daily_exchange_rate': _dailyExchangeRate,
+      'cart_lines': _cartItems.length,
+      'cart_total_usd': _roundQty(_cartTotal, 2),
+      'today_sales_usd': _roundQty(_todaySales, 2),
+      'orders_cached': _orders.length,
+      'session_loading': _isSessionLoading,
+      'selected_customer_label': selectedCustomerLabel,
+      if (selectedCustomer != null && !selectedCustomer.isWalkIn)
+        'selected_customer_id': selectedCustomer.apiId,
+      if (_openingCash != null) 'opening_cash_usd': _roundQty(_openingCash!, 2),
+    };
+  }
+
+  Future<void> _syncChatwootIdentity() async {
+    if (!mounted) {
+      return;
+    }
+    if (!_appChatwootController.isEnabled) {
+      return;
+    }
+
+    final Map<String, dynamic> attributes = _buildChatAttributes();
+    final String? apiKey = _apiKey;
+
+    if (apiKey == null || apiKey.trim().isEmpty) {
+      _appChatwootController.setAnonymous(attributes: attributes);
+      return;
+    }
+
+    final String identifier = _buildChatIdentifier();
+    final ChatwootIdentityState currentState = _appChatwootController.state;
+    if (currentState.isIdentified &&
+        currentState.identifier == identifier &&
+        (currentState.identifierHash ?? '').trim().isNotEmpty) {
+      _appChatwootController.updateAttributes(attributes);
+      return;
+    }
+
+    await _appChatwootController.identifyWithHmac(
+      apiKey: apiKey,
+      identifier: identifier,
+      name: 'POS Terminal',
+      email: null,
+      attributes: attributes,
+    );
+  }
+
+  void _queueChatwootSync() {
+    if (!mounted || !_appChatwootController.isEnabled) return;
+    Future<void>.microtask(_syncChatwootIdentity);
   }
 
   String _formatAmountForUi(double usdAmount) {
@@ -492,9 +653,10 @@ class _PosAppState extends State<PosApp> {
       _displayCurrency = displayCurrency;
       _dailyExchangeRate = normalizedRate;
     });
+    _queueChatwootSync();
   }
 
-  Future<void> _saveApiKey(String rawApiKey) async {
+  Future<void> _saveApiKey(String rawApiKey, PosAppMode mode) async {
     final String apiKey = rawApiKey.trim();
     if (apiKey.isEmpty) {
       return;
@@ -502,6 +664,7 @@ class _PosAppState extends State<PosApp> {
 
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setString(_apiKeyStorageKey, apiKey);
+    await prefs.setString(_appModeStorageKey, _appModeCode(mode));
 
     if (!mounted) {
       return;
@@ -509,6 +672,7 @@ class _PosAppState extends State<PosApp> {
 
     setState(() {
       _apiKey = apiKey;
+      _appMode = mode;
       _openingCash = null;
       _products = <Product>[];
       _orders = <PosOrder>[];
@@ -518,6 +682,11 @@ class _PosAppState extends State<PosApp> {
       _sessionError = null;
       _isSessionLoading = false;
     });
+    _queueChatwootSync();
+
+    if (mode == PosAppMode.customerPriceCheck) {
+      await _loadPosData();
+    }
   }
 
   Future<void> _logout() async {
@@ -539,6 +708,7 @@ class _PosAppState extends State<PosApp> {
       _sessionError = null;
       _isSessionLoading = false;
     });
+    _queueChatwootSync();
   }
 
   Future<void> _startRegisterSession(double openingCash) async {
@@ -552,6 +722,7 @@ class _PosAppState extends State<PosApp> {
       _customers = <Customer>[const Customer.walkIn()];
       _selectedCustomer = _customers.first;
     });
+    _queueChatwootSync();
 
     await _loadPosData();
   }
@@ -566,6 +737,7 @@ class _PosAppState extends State<PosApp> {
       _isSessionLoading = true;
       _sessionError = null;
     });
+    _queueChatwootSync();
 
     final Mashroo3ApiClient client = Mashroo3ApiClient(
       baseUrl: _apiBaseUrl,
@@ -611,6 +783,7 @@ class _PosAppState extends State<PosApp> {
         _isSessionLoading = false;
         _sessionError = null;
       });
+      _queueChatwootSync();
     } catch (error) {
       if (!mounted) {
         return;
@@ -620,6 +793,7 @@ class _PosAppState extends State<PosApp> {
         _isSessionLoading = false;
         _sessionError = _formatError(error);
       });
+      _queueChatwootSync();
     }
   }
 
@@ -680,6 +854,7 @@ class _PosAppState extends State<PosApp> {
             existing.copyWith(quantity: _roundQty(existing.quantity + step));
       }
     });
+    _queueChatwootSync();
 
     return PosActionResult(
       success: true,
@@ -757,12 +932,14 @@ class _PosAppState extends State<PosApp> {
         _cartItems[index] = current.copyWith(quantity: nextQty);
       }
     });
+    _queueChatwootSync();
   }
 
   void _selectCustomer(Customer customer) {
     setState(() {
       _selectedCustomer = customer;
     });
+    _queueChatwootSync();
   }
 
   Future<PosActionResult> _createCustomer(String name, String? phone) async {
@@ -813,6 +990,7 @@ class _PosAppState extends State<PosApp> {
         }
         _selectedCustomer = created;
       });
+      _queueChatwootSync();
 
       return PosActionResult(
         success: true,
@@ -910,6 +1088,7 @@ class _PosAppState extends State<PosApp> {
         _orders = <PosOrder>[createdOrder ?? fallbackOrder, ..._orders];
         _cartItems.clear();
       });
+      _queueChatwootSync();
 
       final int? orderId = createdOrder?.apiId;
       final PosOrder orderForFeedback = createdOrder ?? fallbackOrder;
@@ -974,16 +1153,32 @@ class _PosAppState extends State<PosApp> {
     return MaterialApp(
       title: _tr('app.title'),
       debugShowCheckedModeBanner: false,
+      navigatorKey: _appNavigatorKey,
       localizationsDelegates: context.localizationDelegates,
       supportedLocales: context.supportedLocales,
       locale: context.locale,
+      builder: (BuildContext context, Widget? child) {
+        return _wrapWithChatwootShell(
+          child ?? const SizedBox.shrink(),
+          isEnabled: _appMode != PosAppMode.customerPriceCheck,
+        );
+      },
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF155EEF),
+          seedColor: const Color(0xFFF17313),
           brightness: Brightness.light,
         ),
-        scaffoldBackgroundColor: const Color(0xFFF5F7FA),
+        scaffoldBackgroundColor: Colors.white,
+        cardColor: Colors.white,
+        dividerColor: const Color(0xFFE2E8F0),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          foregroundColor: Color(0xFF0F172A),
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          surfaceTintColor: Colors.transparent,
+        ),
       ),
       home: _buildHome(),
     );
@@ -995,7 +1190,33 @@ class _PosAppState extends State<PosApp> {
     }
 
     if (_apiKey == null || _apiKey!.isEmpty) {
-      return ApiKeyScreen(onSubmit: _saveApiKey);
+      return ApiKeyScreen(
+        onSubmit: _saveApiKey,
+        initialMode: _appMode,
+      );
+    }
+
+    if (_appMode == PosAppMode.customerPriceCheck) {
+      if (_isSessionLoading) {
+        return const _SessionLoadingScreen();
+      }
+
+      if (_sessionError != null) {
+        return _SessionErrorScreen(
+          message: _sessionError!,
+          onRetry: _loadPosData,
+          onChangeApiKey: _logout,
+        );
+      }
+
+      return CustomerPriceCheckScreen(
+        products: _products,
+        displayCurrency: _displayCurrency,
+        dailyExchangeRate: _dailyExchangeRate,
+        onRefreshData: _refreshPosData,
+        onLogout: _logout,
+        onUpdateCurrencySettings: _updateCurrencySettings,
+      );
     }
 
     if (_openingCash == null) {
@@ -1043,9 +1264,14 @@ class _PosAppState extends State<PosApp> {
 }
 
 class ApiKeyScreen extends StatefulWidget {
-  const ApiKeyScreen({super.key, required this.onSubmit});
+  const ApiKeyScreen({
+    super.key,
+    required this.onSubmit,
+    required this.initialMode,
+  });
 
-  final Future<void> Function(String apiKey) onSubmit;
+  final Future<void> Function(String apiKey, PosAppMode mode) onSubmit;
+  final PosAppMode initialMode;
 
   @override
   State<ApiKeyScreen> createState() => _ApiKeyScreenState();
@@ -1053,14 +1279,14 @@ class ApiKeyScreen extends StatefulWidget {
 
 class _ApiKeyScreenState extends State<ApiKeyScreen> {
   final TextEditingController _apiKeyController = TextEditingController();
-  late final RemoteControlLauncher _remoteControlLauncher;
+  late PosAppMode _selectedMode;
   bool _isSubmitting = false;
+  bool _showApiForm = false;
 
   @override
   void initState() {
     super.initState();
-    _remoteControlLauncher =
-        createRemoteControlLauncher(assetPath: _remoteControlAssetPath);
+    _selectedMode = widget.initialMode;
   }
 
   @override
@@ -1082,7 +1308,7 @@ class _ApiKeyScreenState extends State<ApiKeyScreen> {
       _isSubmitting = true;
     });
 
-    await widget.onSubmit(value);
+    await widget.onSubmit(value, _selectedMode);
 
     if (!mounted) {
       return;
@@ -1093,75 +1319,183 @@ class _ApiKeyScreenState extends State<ApiKeyScreen> {
     });
   }
 
-  Future<void> _openRemoteControlDialog() async {
-    await showDialog<void>(
-      context: context,
-      builder: (BuildContext context) {
-        return _RemoteControlDialog(
-          launcher: _remoteControlLauncher,
-          identifier: 'pos-terminal',
-        );
-      },
-    );
+  Future<void> _openMashroo3Website() async {
+    final Uri uri = Uri.parse(_apiBaseUrl);
+    bool didLaunch = false;
+    try {
+      didLaunch = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+        webOnlyWindowName: '_blank',
+      );
+    } catch (_) {
+      didLaunch = false;
+    }
+
+    if (!didLaunch && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_tr('api_key_screen.account_open_failed'))),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Card(
-            elevation: 2,
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    _tr('api_key_screen.title'),
-                    style: Theme.of(context).textTheme.headlineSmall,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  side: BorderSide(
+                    color: Theme.of(context).colorScheme.outlineVariant,
                   ),
-                  const SizedBox(height: 12),
-                  Text(
-                    _tr('api_key_screen.subtitle'),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.asset(
+                              'assets/logo.jpg',
+                              width: 30,
+                              height: 30,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            'Mashroo3',
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        _tr('api_key_screen.account_intro'),
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
+                      const SizedBox(height: 20),
+                      if (!_showApiForm) ...<Widget>[
+                        Text(
+                          _tr('api_key_screen.account_question'),
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton(
+                            onPressed: () {
+                              setState(() {
+                                _showApiForm = true;
+                              });
+                            },
+                            child: Text(_tr('api_key_screen.account_yes')),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: _openMashroo3Website,
+                            child: Text(_tr('api_key_screen.account_no')),
+                          ),
+                        ),
+                      ] else ...<Widget>[
+                        Text(
+                          _tr('api_key_screen.title'),
+                          style: Theme.of(context).textTheme.headlineSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(_tr('api_key_screen.subtitle')),
+                        const SizedBox(height: 20),
+                        Text(
+                          _tr('api_key_screen.mode_label'),
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 10),
+                        SegmentedButton<PosAppMode>(
+                          multiSelectionEnabled: false,
+                          emptySelectionAllowed: false,
+                          showSelectedIcon: false,
+                          segments: <ButtonSegment<PosAppMode>>[
+                            ButtonSegment<PosAppMode>(
+                              value: PosAppMode.pos,
+                              label: Text(_tr('api_key_screen.mode_pos')),
+                              icon: const Icon(Icons.point_of_sale),
+                            ),
+                            ButtonSegment<PosAppMode>(
+                              value: PosAppMode.customerPriceCheck,
+                              label: Text(
+                                _tr('api_key_screen.mode_price_check'),
+                              ),
+                              icon: const Icon(Icons.price_check_outlined),
+                            ),
+                          ],
+                          selected: <PosAppMode>{_selectedMode},
+                          onSelectionChanged: (Set<PosAppMode> value) {
+                            if (value.isEmpty) return;
+                            setState(() {
+                              _selectedMode = value.first;
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _tr('api_key_screen.mode_hint'),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 18),
+                        TextField(
+                          controller: _apiKeyController,
+                          autofocus: true,
+                          onSubmitted: (_) => _submit(),
+                          decoration: InputDecoration(
+                            labelText: _tr('api_key_screen.api_key_label'),
+                            hintText: _tr('api_key_screen.api_key_hint'),
+                            border: const OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton(
+                            onPressed: _isSubmitting ? null : _submit,
+                            child: _isSubmitting
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : Text(_tr('common.continue')),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: TextButton(
+                            onPressed: _openMashroo3Website,
+                            child: Text(_tr('api_key_screen.account_no')),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 20),
-                  TextField(
-                    controller: _apiKeyController,
-                    autofocus: true,
-                    onSubmitted: (_) => _submit(),
-                    decoration: InputDecoration(
-                      labelText: _tr('api_key_screen.api_key_label'),
-                      hintText: _tr('api_key_screen.api_key_hint'),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: _isSubmitting ? null : _submit,
-                      child: _isSubmitting
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Text(_tr('common.continue')),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _openRemoteControlDialog,
-                      icon: const Icon(Icons.support_agent_outlined),
-                      label: Text(_tr('remote_control.title')),
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
           ),
@@ -1245,9 +1579,15 @@ class _OpeningCashScreenState extends State<OpeningCashScreen> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 520),
           child: Card(
-            elevation: 2,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            ),
             child: Padding(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(28),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1308,6 +1648,447 @@ class _OpeningCashScreenState extends State<OpeningCashScreen> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class CustomerPriceCheckScreen extends StatefulWidget {
+  const CustomerPriceCheckScreen({
+    super.key,
+    required this.products,
+    required this.displayCurrency,
+    required this.dailyExchangeRate,
+    required this.onRefreshData,
+    required this.onLogout,
+    required this.onUpdateCurrencySettings,
+  });
+
+  final List<Product> products;
+  final PosDisplayCurrency displayCurrency;
+  final double dailyExchangeRate;
+  final Future<PosActionResult> Function() onRefreshData;
+  final Future<void> Function() onLogout;
+  final Future<void> Function(
+    PosDisplayCurrency displayCurrency,
+    double dailyExchangeRate,
+  )
+      onUpdateCurrencySettings;
+
+  @override
+  State<CustomerPriceCheckScreen> createState() =>
+      _CustomerPriceCheckScreenState();
+}
+
+class _CustomerPriceCheckScreenState extends State<CustomerPriceCheckScreen> {
+  final TextEditingController _barcodeController = TextEditingController();
+  final FocusNode _barcodeFocusNode = FocusNode();
+  final TextEditingController _searchController = TextEditingController();
+  bool _isRefreshing = false;
+  bool _isSigningOut = false;
+  String _searchTerm = '';
+  Product? _highlightedProduct;
+
+  bool get _isDisplayLbp => widget.displayCurrency == PosDisplayCurrency.lbp;
+
+  double get _safeExchangeRate {
+    final double rate = widget.dailyExchangeRate;
+    if (rate > _qtyEpsilon) return rate;
+    return _defaultLbpPerUsdRate;
+  }
+
+  NumberFormat get _displayCurrencyFormatter => NumberFormat.currency(
+        locale: context.locale.toLanguageTag(),
+        name: _isDisplayLbp ? 'LBP' : 'USD',
+        symbol: _isDisplayLbp ? 'LBP ' : '\$',
+        decimalDigits: _isDisplayLbp ? 0 : 2,
+      );
+
+  @override
+  void dispose() {
+    _barcodeController.dispose();
+    _barcodeFocusNode.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  double _usdToDisplay(double amount) {
+    if (_isDisplayLbp) {
+      return amount * _safeExchangeRate;
+    }
+    return amount;
+  }
+
+  String _formatMoney(double amountUsd) {
+    final int decimals = _isDisplayLbp ? 0 : 2;
+    final double displayAmount = _usdToDisplay(amountUsd);
+    return _displayCurrencyFormatter.format(_roundQty(displayAmount, decimals));
+  }
+
+  bool _barcodesMatch(String productBarcode, String scannedBarcode) {
+    final String left = productBarcode.trim();
+    final String right = scannedBarcode.trim();
+
+    if (left == right) {
+      return true;
+    }
+
+    final String normalizedLeft = left.replaceFirst(RegExp(r'^0+'), '');
+    final String normalizedRight = right.replaceFirst(RegExp(r'^0+'), '');
+
+    return normalizedLeft.isNotEmpty && normalizedLeft == normalizedRight;
+  }
+
+  void _showMessage(PosActionResult result) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor: result.success
+            ? Colors.green.shade700
+            : Colors.red.shade700,
+      ),
+    );
+  }
+
+  Future<void> _refreshData() async {
+    setState(() {
+      _isRefreshing = true;
+    });
+
+    final PosActionResult result = await widget.onRefreshData();
+    if (!mounted) return;
+
+    setState(() {
+      _isRefreshing = false;
+    });
+    _showMessage(result);
+    _barcodeFocusNode.requestFocus();
+  }
+
+  void _submitBarcode() {
+    final String barcode = _barcodeController.text.trim();
+    _barcodeController.clear();
+
+    if (barcode.toLowerCase() == 'logout') {
+      _logoutFromBarcode();
+      return;
+    }
+
+    if (barcode.isEmpty) {
+      _showMessage(
+        PosActionResult(
+          success: false,
+          message: _tr('messages.enter_barcode_first'),
+        ),
+      );
+      return;
+    }
+
+    Product? matched;
+    for (final Product product in widget.products) {
+      if (_barcodesMatch(product.barcode, barcode)) {
+        matched = product;
+        break;
+      }
+    }
+
+    if (matched == null) {
+      _showMessage(
+        PosActionResult(
+          success: false,
+          message: _tr(
+            'messages.no_product_found_barcode',
+            namedArgs: <String, String>{'barcode': barcode},
+          ),
+        ),
+      );
+      _barcodeFocusNode.requestFocus();
+      return;
+    }
+
+    final Product selected = matched as Product;
+    setState(() {
+      _highlightedProduct = selected;
+      _searchTerm = selected.name;
+      _searchController.text = selected.name;
+    });
+    _barcodeFocusNode.requestFocus();
+  }
+
+  Future<void> _logoutFromBarcode() async {
+    if (_isSigningOut) return;
+    setState(() {
+      _isSigningOut = true;
+    });
+    await widget.onLogout();
+    if (!mounted) return;
+    setState(() {
+      _isSigningOut = false;
+    });
+  }
+
+  List<Product> _filteredProducts() {
+    if (_searchTerm.isEmpty) {
+      return widget.products;
+    }
+
+    final String lower = _searchTerm.toLowerCase();
+    return widget.products.where((Product product) {
+      return product.name.toLowerCase().contains(lower) ||
+          product.description.toLowerCase().contains(lower) ||
+          product.barcode.toLowerCase().contains(lower);
+    }).toList(growable: false);
+  }
+
+  Future<void> _openCurrencySettingsDialog() async {
+    final _CurrencySettingsResult? result =
+        await showDialog<_CurrencySettingsResult>(
+      context: context,
+      builder: (BuildContext context) {
+        return _CurrencySettingsDialog(
+          displayCurrency: widget.displayCurrency,
+          dailyExchangeRate: widget.dailyExchangeRate,
+        );
+      },
+    );
+
+    if (!mounted || result == null) return;
+    await widget.onUpdateCurrencySettings(
+      result.displayCurrency,
+      result.dailyExchangeRate,
+    );
+  }
+
+  Future<void> _openSettingsSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+            ),
+            child: ListView(
+              shrinkWrap: true,
+              children: <Widget>[
+              ListTile(
+                leading: const Icon(Icons.currency_exchange),
+                title: Text(_tr('currency.settings_title')),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await _openCurrencySettingsDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.language),
+                title: Text(_tr('lang.english')),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  this.context.setLocale(const Locale('en'));
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.language_outlined),
+                title: Text(_tr('lang.arabic')),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  this.context.setLocale(const Locale('ar'));
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: Text(_tr('appbar.refresh')),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await _refreshData();
+                },
+              ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Product> visibleProducts = _filteredProducts();
+    final Product? highlighted = _highlightedProduct;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_tr('api_key_screen.mode_price_check')),
+        actions: <Widget>[
+          Padding(
+            padding: const EdgeInsets.only(right: 10),
+            child: IconButton(
+              tooltip: _tr('appbar.settings'),
+              onPressed: _openSettingsSheet,
+              icon: const Icon(Icons.tune),
+            ),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: <Widget>[
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: TextField(
+                            controller: _barcodeController,
+                            focusNode: _barcodeFocusNode,
+                            autofocus: true,
+                            onSubmitted: (_) => _submitBarcode(),
+                            decoration: InputDecoration(
+                              border: const OutlineInputBorder(),
+                              labelText: _tr('barcode.input_label'),
+                              hintText: _tr('barcode.input_hint'),
+                              prefixIcon: const Icon(Icons.qr_code_scanner),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        FilledButton.icon(
+                          onPressed: _submitBarcode,
+                          icon: const Icon(Icons.search),
+                          label: Text(_tr('common.continue')),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _searchController,
+                      onChanged: (String value) {
+                        setState(() {
+                          _searchTerm = value.trim();
+                        });
+                      },
+                      decoration: InputDecoration(
+                        border: const OutlineInputBorder(),
+                        labelText: _tr('search.products_label'),
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _isRefreshing
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              )
+                            : null,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (highlighted != null) ...<Widget>[
+              const SizedBox(height: 12),
+              Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: BorderSide(
+                    color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              highlighted.name,
+                              style: Theme.of(context).textTheme.titleMedium,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (highlighted.description.trim().isNotEmpty)
+                              Text(
+                                highlighted.description,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ],
+                        ),
+                      ),
+                      Text(
+                        highlighted.isUnitSpecific
+                            ? '${_formatMoney(highlighted.price)} / ${highlighted.unitCode}'
+                            : _formatMoney(highlighted.price),
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Expanded(
+              child: visibleProducts.isEmpty
+                  ? Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                      ),
+                      child: Center(
+                        child: Text(
+                          widget.products.isEmpty
+                              ? _tr('products.none_from_api')
+                              : _tr('products.none_search'),
+                        ),
+                      ),
+                    )
+                  : GridView.builder(
+                      itemCount: visibleProducts.length,
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
+                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 12,
+                        childAspectRatio: 1.08,
+                      ),
+                      itemBuilder: (BuildContext context, int index) {
+                        final Product product = visibleProducts[index];
+                        return _PriceCheckProductCard(
+                          product: product,
+                          formatAmount: _formatMoney,
+                          onTap: () {
+                            setState(() {
+                              _highlightedProduct = product;
+                            });
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
         ),
       ),
     );
@@ -1383,7 +2164,6 @@ class _PosScreenState extends State<PosScreen> {
   final Map<int, TextEditingController> _qtyControllers =
       <int, TextEditingController>{};
   final Map<int, FocusNode> _qtyFocusNodes = <int, FocusNode>{};
-  late final RemoteControlLauncher _remoteControlLauncher;
 
   bool _isSigningOut = false;
   bool _isRefreshing = false;
@@ -1392,13 +2172,6 @@ class _PosScreenState extends State<PosScreen> {
   bool _isCreatingOrder = false;
   bool _allowPartialPayment = false;
   String _searchTerm = '';
-
-  @override
-  void initState() {
-    super.initState();
-    _remoteControlLauncher =
-        createRemoteControlLauncher(assetPath: _remoteControlAssetPath);
-  }
 
   bool get _isDisplayLbp => widget.displayCurrency == PosDisplayCurrency.lbp;
 
@@ -1474,41 +2247,6 @@ class _PosScreenState extends State<PosScreen> {
             : Colors.red.shade700,
       ),
     );
-  }
-
-  String _maskApiKey(String key) {
-    if (key.length <= 4) {
-      return '****';
-    }
-    return '${key.substring(0, 4)}****';
-  }
-
-  String _buildRemoteControlIdentifier() {
-    final Customer? selectedCustomer = widget.selectedCustomer;
-    final String? selectedCustomerLabel =
-        selectedCustomer != null && !selectedCustomer.isWalkIn
-            ? selectedCustomer.displayLabel
-            : null;
-
-    return buildRemoteControlIdentifier(
-      selectedCustomerDisplayLabel: selectedCustomerLabel,
-      selectedCustomerApiId: selectedCustomer?.apiId,
-      maskedApiKey: _maskApiKey(widget.apiKey),
-    );
-  }
-
-  Future<void> _openRemoteControlDialog() async {
-    await showDialog<void>(
-      context: context,
-      builder: (BuildContext context) {
-        return _RemoteControlDialog(
-          launcher: _remoteControlLauncher,
-          identifier: _buildRemoteControlIdentifier(),
-        );
-      },
-    );
-    if (!mounted) return;
-    _barcodeFocusNode.requestFocus();
   }
 
   void _promptPwaInstall() {
@@ -1833,6 +2571,99 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
+  Future<void> _openSettingsSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+            ),
+            child: ListView(
+              shrinkWrap: true,
+              children: <Widget>[
+              if (_appChatwootController.isEnabled)
+                ListTile(
+                  leading: const Icon(Icons.chat_bubble_outline_rounded),
+                  title: Text(_tr('chatwoot.launcher')),
+                  onTap: () async {
+                    Navigator.of(context).pop();
+                    await openSupportChat(
+                      context: this.context,
+                      navigatorKey: _appNavigatorKey,
+                      controller: _appChatwootController,
+                    );
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.currency_exchange),
+                title: Text(_tr('currency.settings_title')),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await _openCurrencySettingsDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.language),
+                title: Text(_tr('lang.english')),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  this.context.setLocale(const Locale('en'));
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.language_outlined),
+                title: Text(_tr('lang.arabic')),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  this.context.setLocale(const Locale('ar'));
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.receipt_long_outlined),
+                title: Text(_tr('appbar.orders')),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await _openOrdersHistory();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: Text(_tr('appbar.refresh')),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await _refreshData();
+                },
+              ),
+              if (kIsWeb)
+                ListTile(
+                  leading: const Icon(Icons.download_for_offline),
+                  title: Text(_tr('appbar.install_app')),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _promptPwaInstall();
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: Text(_tr('appbar.logout')),
+                onTap: _isSigningOut
+                    ? null
+                    : () async {
+                        Navigator.of(context).pop();
+                        await _signOut();
+                      },
+              ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   List<Product> _filteredProducts() {
     if (_searchTerm.isEmpty) {
       return widget.products;
@@ -2080,121 +2911,70 @@ class _PosScreenState extends State<PosScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_tr('app.title')),
+        centerTitle: false,
         actions: <Widget>[
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Chip(
-              label: Text(
-                _tr(
-                  'appbar.opening',
-                  namedArgs: <String, String>{
-                    'amount': _formatMoney(widget.openingCash),
-                  },
-                ),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Chip(
-              label: Text(
-                _tr(
-                  'appbar.sales',
-                  namedArgs: <String, String>{
-                    'amount': _formatMoney(widget.todaySales),
-                  },
-                ),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Chip(
-              label: Text(
-                _tr(
-                  'currency.current_chip',
-                  namedArgs: <String, String>{
-                    'currency': _displayCurrencyCode(widget.displayCurrency),
-                  },
-                ),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Chip(
-              label: Text(
-                _tr(
-                  'appbar.api',
-                  namedArgs: <String, String>{'key': _maskApiKey(widget.apiKey)},
-                ),
-              ),
-            ),
-          ),
-          PopupMenuButton<Locale>(
-            tooltip: _tr('lang.switch'),
-            icon: const Icon(Icons.language),
-            onSelected: (Locale locale) {
-              context.setLocale(locale);
-            },
-            itemBuilder: (BuildContext context) => <PopupMenuEntry<Locale>>[
-              PopupMenuItem<Locale>(
-                value: const Locale('en'),
-                child: Text(_tr('lang.english')),
-              ),
-              PopupMenuItem<Locale>(
-                value: const Locale('ar'),
-                child: Text(_tr('lang.arabic')),
-              ),
-            ],
-          ),
-          IconButton(
-            tooltip: _tr('currency.settings_title'),
-            onPressed: _openCurrencySettingsDialog,
-            icon: const Icon(Icons.currency_exchange),
-          ),
-          IconButton(
-            tooltip: _tr('remote_control.open_tooltip'),
-            onPressed: _openRemoteControlDialog,
-            icon: const Icon(Icons.support_agent_outlined),
-          ),
-          if (kIsWeb)
-            IconButton(
-              tooltip: _tr('appbar.install_app'),
-              onPressed: _promptPwaInstall,
-              icon: const Icon(Icons.download_for_offline),
-            ),
-          IconButton(
-            tooltip: _tr('appbar.orders'),
-            onPressed: _isOpeningOrders ? null : _openOrdersHistory,
-            icon: _isOpeningOrders
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.receipt_long_outlined),
-          ),
-          IconButton(
-            tooltip: _tr('appbar.refresh'),
-            onPressed: _isRefreshing ? null : _refreshData,
-            icon: _isRefreshing
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: TextButton.icon(
-              onPressed: _isSigningOut ? null : _signOut,
-              icon: const Icon(Icons.logout),
-              label: Text(_tr('appbar.logout')),
+            padding: const EdgeInsets.only(right: 12),
+            child: OutlinedButton.icon(
+              onPressed: _openSettingsSheet,
+              icon: const Icon(Icons.tune),
+              label: Text(_tr('appbar.settings')),
             ),
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(44),
+          child: SizedBox(
+            height: 44,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              children: <Widget>[
+                Chip(
+                  label: Text(
+                    _tr(
+                      'appbar.opening',
+                      namedArgs: <String, String>{
+                        'amount': _formatMoney(widget.openingCash),
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Chip(
+                  label: Text(
+                    _tr(
+                      'appbar.sales',
+                      namedArgs: <String, String>{
+                        'amount': _formatMoney(widget.todaySales),
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Chip(
+                  label: Text(
+                    _tr(
+                      'currency.current_chip',
+                      namedArgs: <String, String>{
+                        'currency': _displayCurrencyCode(widget.displayCurrency),
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Chip(
+                  label: Text(
+                    _tr(
+                      'appbar.api',
+                      namedArgs: <String, String>{'key': _maskApiKey(widget.apiKey)},
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       body: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
@@ -2217,6 +2997,13 @@ class _PosScreenState extends State<PosScreen> {
                   child: Column(
                     children: <Widget>[
                       Card(
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          side: BorderSide(
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.all(12),
                           child: Column(
@@ -2267,6 +3054,15 @@ class _PosScreenState extends State<PosScreen> {
                       Expanded(
                         child: visibleProducts.isEmpty
                             ? Card(
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                  side: BorderSide(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .outlineVariant,
+                                  ),
+                                ),
                                 child: Center(
                                   child: Text(
                                     widget.products.isEmpty
@@ -2309,6 +3105,13 @@ class _PosScreenState extends State<PosScreen> {
                   child: Column(
                     children: <Widget>[
                       Card(
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          side: BorderSide(
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.all(12),
                           child: Column(
@@ -2377,6 +3180,14 @@ class _PosScreenState extends State<PosScreen> {
                       const SizedBox(height: 12),
                       Expanded(
                         child: Card(
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            side: BorderSide(
+                              color:
+                                  Theme.of(context).colorScheme.outlineVariant,
+                            ),
+                          ),
                           child: widget.cartItems.isEmpty
                               ? Center(
                                   child: Text(_tr('cart.empty')),
@@ -2531,6 +3342,13 @@ class _PosScreenState extends State<PosScreen> {
                       ),
                       const SizedBox(height: 12),
                       Card(
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          side: BorderSide(
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.all(12),
                           child: Column(
@@ -2826,136 +3644,6 @@ class _CurrencySettingsDialogState extends State<_CurrencySettingsDialog> {
         FilledButton(
           onPressed: _save,
           child: Text(_tr('common.continue')),
-        ),
-      ],
-    );
-  }
-}
-
-class _RemoteControlDialog extends StatefulWidget {
-  const _RemoteControlDialog({
-    required this.launcher,
-    required this.identifier,
-  });
-
-  final RemoteControlLauncher launcher;
-  final String identifier;
-
-  @override
-  State<_RemoteControlDialog> createState() => _RemoteControlDialogState();
-}
-
-class _RemoteControlDialogState extends State<_RemoteControlDialog> {
-  bool _isLaunching = false;
-  RemoteControlLaunchResult? _result;
-
-  Future<void> _startRemoteControl() async {
-    if (_isLaunching) return;
-    setState(() {
-      _isLaunching = true;
-      _result = null;
-    });
-
-    final RemoteControlLaunchResult result = await widget.launcher
-        .launchOneTimeConnect(identifier: widget.identifier);
-    if (!mounted) return;
-
-    setState(() {
-      _isLaunching = false;
-      _result = result;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final RemoteControlLaunchResult? result = _result;
-    final bool isSupported = widget.launcher.isSupported;
-
-    String? statusText;
-    Color? statusColor;
-    if (result != null) {
-      if (result.success) {
-        statusText = _tr('remote_control.status_success');
-        statusColor = Colors.green.shade700;
-      } else {
-        statusText = _tr(
-          'remote_control.status_failed',
-          namedArgs: <String, String>{'message': result.message},
-        );
-        statusColor = Theme.of(context).colorScheme.error;
-      }
-    }
-
-    return AlertDialog(
-      title: Text(_tr('remote_control.title')),
-      content: SizedBox(
-        width: 520,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text(_tr('remote_control.description')),
-            const SizedBox(height: 12),
-            Text(
-              _tr('remote_control.identifier_label'),
-              style: Theme.of(context).textTheme.labelMedium,
-            ),
-            const SizedBox(height: 4),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-              ),
-              child: SelectableText(
-                widget.identifier,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(_tr('remote_control.confirmation_text')),
-            if (!isSupported) ...<Widget>[
-              const SizedBox(height: 10),
-              Text(
-                _tr(
-                  'remote_control.unsupported_platform',
-                  namedArgs: <String, String>{
-                    'reason': widget.launcher.unsupportedReason,
-                  },
-                ),
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            ],
-            if (statusText != null) ...<Widget>[
-              const SizedBox(height: 10),
-              Text(statusText, style: TextStyle(color: statusColor)),
-            ],
-          ],
-        ),
-      ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: _isLaunching ? null : () => Navigator.of(context).pop(),
-          child: Text(_tr('common.close')),
-        ),
-        FilledButton.icon(
-          onPressed:
-              !isSupported || _isLaunching ? null : _startRemoteControl,
-          icon: _isLaunching
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.power_settings_new),
-          label: Text(
-            _isLaunching
-                ? _tr('remote_control.starting')
-                : _tr('remote_control.start_button'),
-          ),
         ),
       ],
     );
@@ -3804,6 +4492,64 @@ class _CreateCustomerDialogState extends State<_CreateCustomerDialog> {
   }
 }
 
+class _PriceCheckProductCard extends StatelessWidget {
+  const _PriceCheckProductCard({
+    required this.product,
+    required this.formatAmount,
+    required this.onTap,
+  });
+
+  final Product product;
+  final String Function(double amountUsd) formatAmount;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                product.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                product.description,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const Spacer(),
+              Text(
+                product.isUnitSpecific
+                    ? '${formatAmount(product.price)} / ${product.unitCode}'
+                    : formatAmount(product.price),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ProductCard extends StatelessWidget {
   const _ProductCard({
     required this.product,
@@ -3822,6 +4568,11 @@ class _ProductCard extends StatelessWidget {
 
     return Card(
       clipBehavior: Clip.antiAlias,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -3882,7 +4633,7 @@ class _ProductCard extends StatelessWidget {
                   const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
-                    child: FilledButton.tonalIcon(
+                    child: FilledButton.icon(
                       onPressed: outOfStock ? null : onAdd,
                       icon: const Icon(Icons.add),
                       label: Text(
@@ -3913,7 +4664,7 @@ class _ProductImage extends StatelessWidget {
 
     if (imageUrl == null || imageUrl.isEmpty) {
       return Container(
-        color: Colors.grey.shade200,
+        color: const Color(0xFFF8FAFC),
         child: const Icon(Icons.inventory_2_outlined),
       );
     }
@@ -3927,7 +4678,7 @@ class _ProductImage extends StatelessWidget {
         StackTrace? stackTrace,
       ) {
         return Container(
-          color: Colors.grey.shade200,
+          color: const Color(0xFFF8FAFC),
           child: const Icon(Icons.image_not_supported),
         );
       },
@@ -4019,6 +4770,13 @@ class _SmallScreenNotice extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Column(

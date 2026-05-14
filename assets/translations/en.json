@@ -55,6 +55,15 @@
   "api_key_screen": {
     "title": "POS Activation",
     "subtitle": "Enter your API key to connect with Mashroo3 API.",
+    "account_intro": "This app is a POS and requires a Mashroo3 account.",
+    "account_question": "Do you already have a Mashroo3 account?",
+    "account_yes": "Yes, I already have an account",
+    "account_no": "No, create an account on mashroo3.net",
+    "account_open_failed": "Could not open mashroo3.net. Please open it manually.",
+    "mode_label": "Terminal mode",
+    "mode_pos": "POS",
+    "mode_price_check": "Customer Price Check",
+    "mode_hint": "Mode can be changed only from this API key page.",
     "api_key_label": "API key",
     "api_key_hint": "Paste API key here"
   },
@@ -70,6 +79,7 @@
     "sales": "Sales: {amount}",
     "api": "API: {key}",
     "install_app": "Install app",
+    "settings": "Settings",
     "orders": "Orders",
     "refresh": "Refresh",
     "logout": "Log out"
@@ -212,17 +222,9 @@
     "exchange_rate_helper": "Orders stay in USD. UI values in LBP use this rate.",
     "exchange_rate_invalid": "Enter a valid exchange rate greater than zero."
   },
-  "remote_control": {
-    "open_tooltip": "Mashroo3 Remote Control",
-    "title": "Mashroo3 Remote Control",
-    "description": "Start a one-time remote control session for support.",
-    "identifier_label": "Support identifier (preview):",
-    "confirmation_text": "This will launch the local support executable once using connect.",
-    "start_button": "Start One-Time Remote Control",
-    "starting": "Starting...",
-    "status_success": "Mashroo3 Remote Control started.",
-    "status_success_fallback": "Mashroo3 Remote Control started in fallback connect mode.",
-    "status_failed": "Could not start Mashroo3 Remote Control: {message}",
-    "unsupported_platform": "Windows desktop only. {reason}"
+  "chatwoot": {
+    "launcher": "Support Chat",
+    "title": "Support Chat",
+    "load_error": "Could not initialize support chat. Please try again later."
   }
 }

@@ -5,11 +5,22 @@ on:
     tags:
       - 'v*' # Runs when you push a tag like v2.1.0
   workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'GitHub Environment to use for build vars/secrets'
+        required: true
+        default: main
+        type: environment
 
 jobs:
   build:
     name: Build for ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_environment || 'main' }}
+    env:
+      CHATWOOT_ENABLED: ${{ vars.CHATWOOT_ENABLED }}
+      CHATWOOT_BASE_URL: ${{ vars.CHATWOOT_BASE_URL }}
+      CHATWOOT_WEBSITE_TOKEN: ${{ secrets.CHATWOOT_WEBSITE_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -18,14 +29,21 @@ jobs:
           - platform: android
             os: ubuntu-latest
             artifacts: build/app/outputs/flutter-apk/app-release.apk
-            command: flutter build apk --release
+            command: >
+              flutter build apk --release
+              --dart-define=CHATWOOT_ENABLED="$CHATWOOT_ENABLED"
+              --dart-define=CHATWOOT_BASE_URL="$CHATWOOT_BASE_URL"
+              --dart-define=CHATWOOT_WEBSITE_TOKEN="$CHATWOOT_WEBSITE_TOKEN"
             
           # --- IOS (Normal Only) ---
           - platform: ios
             os: macos-latest
             artifacts: ios-build.zip
             command: |
-              flutter build ios --release --no-codesign
+              flutter build ios --release --no-codesign \
+                --dart-define=CHATWOOT_ENABLED="$CHATWOOT_ENABLED" \
+                --dart-define=CHATWOOT_BASE_URL="$CHATWOOT_BASE_URL" \
+                --dart-define=CHATWOOT_WEBSITE_TOKEN="$CHATWOOT_WEBSITE_TOKEN"
               zip -r ios-build.zip build/ios/iphoneos
               
           # --- LINUX (Both) ---
@@ -38,14 +56,20 @@ jobs:
               sudo apt-get update
               sudo apt-get install -y ninja-build libgtk-3-dev
               # 1. Normal Build
-              flutter build linux --release
+              flutter build linux --release \
+                --dart-define=CHATWOOT_ENABLED="$CHATWOOT_ENABLED" \
+                --dart-define=CHATWOOT_BASE_URL="$CHATWOOT_BASE_URL" \
+                --dart-define=CHATWOOT_WEBSITE_TOKEN="$CHATWOOT_WEBSITE_TOKEN"
               tar -czf linux-full-release.tar.gz -C build/linux/x64/release/bundle .
               # 2. Desktop Updater Build
-              dart run desktop_updater:release linux
+              dart run desktop_updater:release linux \
+                --dart-define=CHATWOOT_ENABLED="$CHATWOOT_ENABLED" \
+                --dart-define=CHATWOOT_BASE_URL="$CHATWOOT_BASE_URL" \
+                --dart-define=CHATWOOT_WEBSITE_TOKEN="$CHATWOOT_WEBSITE_TOKEN"
               dart run desktop_updater:archive linux
               tar -czf linux-updater-files.tar.gz -C dist .
 
-                    # --- WINDOWS (Full + Updater + MSIX) ---
+          # --- WINDOWS (Full + Updater + MSIX) ---
           - platform: windows
             os: windows-latest
             artifacts: |
@@ -54,18 +78,19 @@ jobs:
               build/windows/x64/runner/Release/mashroo3.msix
             command: |
               # 1. Normal Build
-              flutter build windows --release
+              flutter build windows --release "--dart-define=CHATWOOT_ENABLED=$env:CHATWOOT_ENABLED" "--dart-define=CHATWOOT_BASE_URL=$env:CHATWOOT_BASE_URL" "--dart-define=CHATWOOT_WEBSITE_TOKEN=$env:CHATWOOT_WEBSITE_TOKEN"
               Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows-full-release.zip
               
               # 2. Desktop Updater Build
-              dart run desktop_updater:release windows
+              dart run desktop_updater:release windows "--dart-define=CHATWOOT_ENABLED=$env:CHATWOOT_ENABLED" "--dart-define=CHATWOOT_BASE_URL=$env:CHATWOOT_BASE_URL" "--dart-define=CHATWOOT_WEBSITE_TOKEN=$env:CHATWOOT_WEBSITE_TOKEN"
               dart run desktop_updater:archive windows
               Compress-Archive -Path dist/* -DestinationPath windows-updater-files.zip
               
               # 3. MSIX Build for Microsoft Store
               # Note: Parameters like --identity-name and --publisher-display-name 
               # should match your Microsoft Partner Center dashboard exactly.
-              dart run msix:create
+              $msixBuildArgs = "--dart-define=DISABLE_DESKTOP_UPDATER=true --dart-define=CHATWOOT_ENABLED=$env:CHATWOOT_ENABLED --dart-define=CHATWOOT_BASE_URL=$env:CHATWOOT_BASE_URL --dart-define=CHATWOOT_WEBSITE_TOKEN=$env:CHATWOOT_WEBSITE_TOKEN"
+              dart run msix:create --windows-build-args "$msixBuildArgs"
 
           # --- MACOS (Both) ---
           - platform: macos
@@ -75,12 +100,18 @@ jobs:
               macos-updater-files.zip
             command: |
               # 1. Normal Build
-              flutter build macos --release
+              flutter build macos --release \
+                --dart-define=CHATWOOT_ENABLED="$CHATWOOT_ENABLED" \
+                --dart-define=CHATWOOT_BASE_URL="$CHATWOOT_BASE_URL" \
+                --dart-define=CHATWOOT_WEBSITE_TOKEN="$CHATWOOT_WEBSITE_TOKEN"
               cd build/macos/Build/Products/Release
               zip -r ../../../../../macos-full-release.zip mashroo3.app
               cd ../../../../../
               # 2. Desktop Updater Build
-              dart run desktop_updater:release macos
+              dart run desktop_updater:release macos \
+                --dart-define=CHATWOOT_ENABLED="$CHATWOOT_ENABLED" \
+                --dart-define=CHATWOOT_BASE_URL="$CHATWOOT_BASE_URL" \
+                --dart-define=CHATWOOT_WEBSITE_TOKEN="$CHATWOOT_WEBSITE_TOKEN"
               dart run desktop_updater:archive macos
               cd dist
               zip -r ../macos-updater-files.zip *
@@ -105,6 +136,24 @@ jobs:
 
       - name: Get dependencies
         run: flutter pub get
+
+      - name: Validate Chatwoot build variables
+        shell: bash
+        run: |
+          if [ -z "$CHATWOOT_ENABLED" ]; then
+            echo "::error::Missing CHATWOOT_ENABLED in selected GitHub Environment."
+            exit 1
+          fi
+          if [ "$CHATWOOT_ENABLED" = "true" ]; then
+            if [ -z "$CHATWOOT_BASE_URL" ]; then
+              echo "::error::CHATWOOT_BASE_URL is required when CHATWOOT_ENABLED=true."
+              exit 1
+            fi
+            if [ -z "$CHATWOOT_WEBSITE_TOKEN" ]; then
+              echo "::error::CHATWOOT_WEBSITE_TOKEN is required when CHATWOOT_ENABLED=true."
+              exit 1
+            fi
+          fi
 
       - name: Build and Package (Normal & Updater)
         run: ${{ matrix.command }}

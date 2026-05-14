@@ -55,6 +55,15 @@
   "api_key_screen": {
     "title": "تفعيل نقطة البيع",
     "subtitle": "أدخل مفتاح API للاتصال بواجهة Mashroo3 API.",
+    "account_intro": "هذا التطبيق هو نقطة بيع ويتطلب حسابًا على Mashroo3.",
+    "account_question": "هل لديك حساب على Mashroo3؟",
+    "account_yes": "نعم، لدي حساب بالفعل",
+    "account_no": "لا، أنشئ حسابًا على mashroo3.net",
+    "account_open_failed": "تعذر فتح mashroo3.net. يرجى فتحه يدويًا.",
+    "mode_label": "وضع الطرفية",
+    "mode_pos": "نقطة البيع",
+    "mode_price_check": "فحص سعر الزبون",
+    "mode_hint": "يمكن تغيير الوضع فقط من صفحة مفتاح API هذه.",
     "api_key_label": "مفتاح API",
     "api_key_hint": "ألصق مفتاح API هنا"
   },
@@ -70,6 +79,7 @@
     "sales": "المبيعات: {amount}",
     "api": "API: {key}",
     "install_app": "تثبيت التطبيق",
+    "settings": "الإعدادات",
     "orders": "الطلبات",
     "refresh": "تحديث",
     "logout": "تسجيل الخروج"
@@ -212,17 +222,9 @@
     "exchange_rate_helper": "الطلبات تبقى بالدولار. قيم الواجهة بالليرة تعتمد هذا السعر.",
     "exchange_rate_invalid": "أدخل سعر صرف صحيحًا أكبر من صفر."
   },
-  "remote_control": {
-    "open_tooltip": "Mashroo3 Remote Control",
-    "title": "Mashroo3 Remote Control",
-    "description": "ابدأ جلسة تحكم عن بعد لمرة واحدة لأغراض الدعم.",
-    "identifier_label": "معرّف الدعم (للمعاينة):",
-    "confirmation_text": "سيتم تشغيل أداة الدعم المحلية مرة واحدة باستخدام connect.",
-    "start_button": "بدء تحكم عن بعد لمرة واحدة",
-    "starting": "جارٍ البدء...",
-    "status_success": "تم تشغيل Mashroo3 Remote Control بنجاح.",
-    "status_success_fallback": "تم تشغيل Mashroo3 Remote Control بوضع الاتصال البديل.",
-    "status_failed": "تعذر تشغيل Mashroo3 Remote Control: {message}",
-    "unsupported_platform": "الميزة متاحة فقط على سطح مكتب Windows. {reason}"
+  "chatwoot": {
+    "launcher": "دعم مباشر",
+    "title": "دعم مباشر",
+    "load_error": "تعذر تهيئة الدردشة الآن. الرجاء المحاولة لاحقًا."
   }
 }
